@@ -34,10 +34,19 @@ Sunshine's **Configuration → Audio/Video → Display Id** sets the default cap
 
 - [The GitHub Actions workflow](.github/workflows/ci.yml) builds with Xcode 27.2 on a GitHub-hosted Mac. It resolves the pinned dependencies, compiles an iPhone release and builds and launches an iPhone Duo simulator copy. The device artifact contains an unsigned IPA and a SHA-256 checksum. iPhone installation requires signing.
 - Use Xcode 27.1 or newer on a Mac for device signing. Open `Moonlight.xcodeproj`, select the **Moonlight** scheme, choose your team in **Signing & Capabilities**, then build to your registered device. The iOS bundle ID is `com.antonvantra.moonlight.duo`.
-- For internal TestFlight, archive the Moonlight scheme on a Mac in Xcode using your team. In Organizer, choose Distribute App, then TestFlight Internal Only. Xcode can use Apple's cloud-managed signing from your own session.
+- For internal TestFlight with Xcode, archive the Moonlight scheme using your team. In Organizer, choose Distribute App, then TestFlight Internal Only. Xcode can use Apple's cloud-managed signing from your own session.
+- To sign and upload from Windows, run the [TestFlight workflow](.github/workflows/testflight.yml) on the GitHub-hosted Mac. Use an Apple Distribution certificate reserved for this app and an App Store Connect profile for the explicit Moonlight Duo bundle ID. Invite a separate Developer account with access to Moonlight Duo only, then have that account create its own individual API key. The workflow checks which apps the key can see before it imports the signing certificate.
 - In App Store Connect, open the app's **TestFlight** tab after processing. Complete any declarations Apple requests, add the build to an internal testing group, and add your own tester account. Install from Apple's TestFlight app. [Apple's internal testing instructions](https://developer.apple.com/help/app-store-connect/test-a-beta-version/add-internal-testers/).
 - For Windows USB installation, use the official [iLoader](https://github.com/nab138/iloader) build with Apple Devices. Connect and trust the iPhone, then sign in to iLoader with a separate personal Apple account and choose **Import IPA**. Select the downloaded Moonlight Duo IPA. The tool signs it before installing. Enable Developer Mode if iOS prompts you. Free personal signing expires after seven days and needs renewal.
 
 ## Verification
 
 The native geometry tests cover the outer and inner screen sizes, portrait rotation, split panes, even stream resolutions, cropped and fitted coordinates, and the resolution-change threshold. They run both locally and on the Mac runner. The simulator check launches the app on iPhone Duo, but physical-device acceptance still covers streaming in both screen poses, mouse and keyboard input, screen-off capture, and a Wi-Fi-to-cellular stream.
+
+The TestFlight workflow's **preflight** mode checks Xcode without any Apple credentials. Before using **upload**, add the following only to the branch-restricted **moonlight-testflight** GitHub environment.
+
+- **MOONLIGHT_CERTIFICATE** and **MOONLIGHT_CERTIFICATE_PASSWORD** hold the base64-encoded PFX and its password.
+- **MOONLIGHT_PROFILE** holds the base64-encoded App Store Connect provisioning profile.
+- **MOONLIGHT_UPLOAD_KEY_ID** and **MOONLIGHT_UPLOAD_PRIVATE_KEY** hold the individual key ID and the contents of its P8 file.
+
+The upload job creates an internal-only export and sends it to Apple. The private signing files are temporary and the signed IPA stays out of the public workflow artifacts.

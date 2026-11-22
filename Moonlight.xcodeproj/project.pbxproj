@@ -1291,6 +1291,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.antonvantra.moonlight.duo;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE = "";
+				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "$(MOONLIGHT_DUO_PROFILE)";
 				SKIP_INSTALL = NO;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OBJC_BRIDGING_HEADER = "Limelight/Input/Moonlight-Bridging-Header.h";

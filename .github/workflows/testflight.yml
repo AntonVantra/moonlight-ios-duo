@@ -32,11 +32,12 @@ jobs:
 
       - name: Check available Apple signing and upload tooling
         run: |
+          bash -n BuildScripts/sign-testflight.sh
           xcodebuild -version
           xcodebuild -help > "$RUNNER_TEMP/xcodebuild-help.txt" 2>&1
           grep -A 4 'testFlightInternalTestingOnly' "$RUNNER_TEMP/xcodebuild-help.txt"
           xcrun altool --help > "$RUNNER_TEMP/altool-help.txt" 2>&1 || true
-          grep -Ei -A 3 'apiissuer|apikey|individual|jwt' "$RUNNER_TEMP/altool-help.txt" || true
+          grep -A 2 -- '--api-key-subject' "$RUNNER_TEMP/altool-help.txt"
 
       - name: Verify the unsigned Xcode archive
         run: |
@@ -47,3 +48,23 @@ jobs:
           app="$archive/Products/Applications/Moonlight.app"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist" | grep -Fx com.antonvantra.moonlight.duo
           test -f "$app/Moonlight"
+
+  upload:
+    if: github.repository == 'AntonVantra/moonlight-ios-duo' && github.ref == 'refs/heads/duo-desktop' && inputs.mode == 'upload'
+    runs-on: xcode-27
+    timeout-minutes: 25
+    environment: moonlight-testflight
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Sign Moonlight Duo and upload to internal TestFlight
+        env:
+          MOONLIGHT_CERTIFICATE: ${{ secrets.MOONLIGHT_CERTIFICATE }}
+          MOONLIGHT_CERTIFICATE_PASSWORD: ${{ secrets.MOONLIGHT_CERTIFICATE_PASSWORD }}
+          MOONLIGHT_PROFILE: ${{ secrets.MOONLIGHT_PROFILE }}
+          MOONLIGHT_UPLOAD_KEY_ID: ${{ secrets.MOONLIGHT_UPLOAD_KEY_ID }}
+          MOONLIGHT_UPLOAD_PRIVATE_KEY: ${{ secrets.MOONLIGHT_UPLOAD_PRIVATE_KEY }}
+        run: bash BuildScripts/sign-testflight.sh
