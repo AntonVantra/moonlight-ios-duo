@@ -1215,7 +1215,6 @@
 				GCC_PREFIX_HEADER = "Limelight/Limelight-Prefix.pch";
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
-					/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include,
 					"$(PROJECT_DIR)/moonlight-common/moonlight-common-c/src",
 					"$(SDKROOT)/usr/include/libxml2/**",
 					"$(PROJECT_DIR)/libs/**",
@@ -1265,7 +1264,6 @@
 				GCC_PREFIX_HEADER = "Limelight/Limelight-Prefix.pch";
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
-					/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include,
 					"$(PROJECT_DIR)/moonlight-common/moonlight-common-c/src",
 					"$(SDKROOT)/usr/include/libxml2/**",
 					"$(PROJECT_DIR)/libs/**",
