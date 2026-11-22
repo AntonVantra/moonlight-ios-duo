@@ -1,0 +1,38 @@
+name: Upload Moonlight Duo to internal TestFlight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: moonlight-duo-testflight
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    if: github.repository == 'AntonVantra/moonlight-ios-duo' && github.ref == 'refs/heads/duo-desktop'
+    runs-on: xcode-27
+    timeout-minutes: 30
+    environment: testflight
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Run geometry tests
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror Tests/DesktopGeometryTests.c -o "$RUNNER_TEMP/desktop-geometry"
+          "$RUNNER_TEMP/desktop-geometry"
+
+      - name: Archive, sign and upload to internal TestFlight
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: bash BuildScripts/upload-testflight.sh
