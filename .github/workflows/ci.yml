@@ -1,45 +1,104 @@
-name: CI
+name: Moonlight Duo builds
 
 on:
   push:
+    branches: [duo-desktop]
   pull_request:
-    branches:
-      - master
+    branches: [master, duo-desktop]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
-
 jobs:
   build:
-    name: Build (${{ matrix.platform }})
-    runs-on: macos-latest
+    name: ${{ matrix.name }}
+    runs-on: xcode-27
+    timeout-minutes: 22
     strategy:
       fail-fast: false
       matrix:
         include:
-          - scheme: Moonlight
+          - name: iPhone device
+            scheme: Moonlight
+            sdk: iphoneos
+            destination: generic/platform=iOS
+          - name: iPhone Duo simulator
+            scheme: Moonlight
             sdk: iphonesimulator
-            platform: iOS
-          - scheme: Moonlight TV
+            destination: generic/platform=iOS Simulator
+          - name: Apple TV regression build
+            scheme: Moonlight TV
             sdk: appletvsimulator
-            platform: tvOS
-
+            destination: generic/platform=tvOS Simulator
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
+          persist-credentials: false
 
-      - name: Download ${{ matrix.platform }} platform
-        run: xcodebuild -downloadPlatform ${{ matrix.platform }}
+      - name: Check Xcode and desktop geometry
+        run: |
+          xcodebuild -version
+          xcrun --sdk ${{ matrix.sdk }} --show-sdk-version
+          cc -std=c11 -Wall -Wextra -Werror Tests/DesktopGeometryTests.c -o "$RUNNER_TEMP/desktop-geometry"
+          "$RUNNER_TEMP/desktop-geometry"
 
-      - name: Build Debug
-        run: xcodebuild -project Moonlight.xcodeproj -scheme "${{ matrix.scheme }}" -configuration Debug -sdk ${{ matrix.sdk }} clean build
+      - name: Resolve pinned Swift dependencies
+        run: |
+          xcodebuild -project Moonlight.xcodeproj -scheme "${{ matrix.scheme }}" \
+            -resolvePackageDependencies -onlyUsePackageVersionsFromResolvedFile
 
       - name: Build Release
-        run: xcodebuild -project Moonlight.xcodeproj -scheme "${{ matrix.scheme }}" -configuration Release -sdk ${{ matrix.sdk }} clean build
+        run: |
+          xcodebuild -project Moonlight.xcodeproj -scheme "${{ matrix.scheme }}" \
+            -configuration Release -sdk ${{ matrix.sdk }} -destination "${{ matrix.destination }}" \
+            -derivedDataPath "$RUNNER_TEMP/duo-build" -onlyUsePackageVersionsFromResolvedFile \
+            CODE_SIGNING_ALLOWED=NO build
+
+      - name: Package unsigned iPhone build
+        if: matrix.sdk == 'iphoneos' && github.event_name != 'pull_request'
+        run: |
+          mkdir -p "$RUNNER_TEMP/package/Payload" dist
+          ditto "$RUNNER_TEMP/duo-build/Build/Products/Release-iphoneos/Moonlight.app" \
+            "$RUNNER_TEMP/package/Payload/Moonlight.app"
+          ditto -c -k --norsrc --keepParent "$RUNNER_TEMP/package/Payload" dist/Moonlight-Duo-unsigned.ipa
+          cp LICENSE.txt dist/
+          (cd dist && shasum -a 256 Moonlight-Duo-unsigned.ipa > SHA256SUMS.txt)
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.sdk == 'iphoneos' && github.event_name != 'pull_request'
+        with:
+          name: Moonlight-Duo-unsigned
+          path: dist/
+          if-no-files-found: error
+
+      - name: Start the app on an iPhone Duo simulator
+        if: matrix.sdk == 'iphonesimulator'
+        run: |
+          device=$(xcrun simctl list -j devices available | python3 -c '
+          import json, sys
+          runtimes = json.load(sys.stdin)["devices"]
+          for runtime in sorted(runtimes, reverse=True):
+              if "iOS-27-" not in runtime:
+                  continue
+              for device in runtimes[runtime]:
+                  if device["name"] == "iPhone Duo":
+                      print(device["udid"])
+                      sys.exit(0)
+          sys.exit("No iPhone Duo simulator in this runner image.")
+          ')
+          xcrun simctl boot "$device"
+          xcrun simctl bootstatus "$device" -b
+          xcrun simctl install "$device" "$RUNNER_TEMP/duo-build/Build/Products/Release-iphonesimulator/Moonlight.app"
+          bundle=com.antonvantra.moonlight.duo
+          xcrun simctl launch "$device" "$bundle"
+          sleep 3
+          xcrun simctl spawn "$device" launchctl list > "$RUNNER_TEMP/duo-simulator-processes"
+          awk -v bundle="$bundle" '$1 ~ /^[0-9]+$/ && index($0,bundle) { alive=1 } END { exit !alive }' "$RUNNER_TEMP/duo-simulator-processes"
