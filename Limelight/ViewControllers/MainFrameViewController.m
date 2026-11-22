@@ -608,6 +608,9 @@ static NSMutableSet* hostList;
     _streamConfig.appID = app.id;
     _streamConfig.appName = app.name;
     _streamConfig.serverCert = app.host.serverCert;
+#if !TARGET_OS_TV
+    _streamConfig.desktopMode = [app.name caseInsensitiveCompare:@"Desktop"] == NSOrderedSame;
+#endif
     
     DataManager* dataMan = [[DataManager alloc] init];
     TemporarySettings* streamSettings = [dataMan getSettings];
@@ -615,8 +618,9 @@ static NSMutableSet* hostList;
     _streamConfig.frameRate = [streamSettings.framerate intValue];
     if (@available(iOS 10.3, *)) {
         // Don't stream more FPS than the display can show
-        if (_streamConfig.frameRate > [UIScreen mainScreen].maximumFramesPerSecond) {
-            _streamConfig.frameRate = (int)[UIScreen mainScreen].maximumFramesPerSecond;
+        NSInteger maxFPS = self.view.window.windowScene.screen.maximumFramesPerSecond;
+        if (maxFPS > 0 && _streamConfig.frameRate > maxFPS) {
+            _streamConfig.frameRate = (int)maxFPS;
             Log(LOG_W, @"Clamping FPS to maximum refresh rate: %d", _streamConfig.frameRate);
         }
     }
@@ -662,7 +666,8 @@ static NSMutableSet* hostList;
     
     _streamConfig.serverCodecModeSupport = app.host.serverCodecModeSupport;
     
-    switch (streamSettings.preferredCodec) {
+    BOOL preferDesktopAV1 = _streamConfig.desktopMode && streamSettings.preferredCodec == CODEC_PREF_AUTO;
+    switch (preferDesktopAV1 ? CODEC_PREF_AV1 : streamSettings.preferredCodec) {
         case CODEC_PREF_AV1:
 #if defined(__IPHONE_16_0) || defined(__TVOS_16_0)
             if (VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)) {

@@ -27,11 +27,14 @@
     char _appVersionString[32];
     char _gfeVersionString[32];
     char _rtspSessionUrl[128];
+    VideoDecoderRenderer *_connectionRenderer;
+    __weak id<ConnectionCallbacks> _connectionCallbacks;
 }
 
 static NSLock* initLock;
 static OpusMSDecoder* opusDecoder;
-static id<ConnectionCallbacks> _callbacks;
+static __weak id<ConnectionCallbacks> _callbacks;
+static Connection *activeConnection;
 static int lastFrameNumber;
 static int activeVideoFormat;
 static video_stats_t currentVideoStats;
@@ -371,21 +374,25 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
     [_callbacks setControllerLed:controllerNumber r:r g:g b:b];
 }
 
--(void) terminate
+-(void) terminateWithCompletion:(dispatch_block_t)completion
 {
-    // Interrupt any action blocking LiStartConnection(). This is
-    // thread-safe and done outside initLock on purpose, since we
-    // won't be able to acquire it if LiStartConnection is in
-    // progress.
-    LiInterruptConnection();
-    
-    // We dispatch this async to get out because this can be invoked
-    // on a thread inside common and we don't want to deadlock. It also avoids
-    // blocking on the caller's thread waiting to acquire initLock.
+    [self cancel];
+    // Interrupt startup before waiting on the lock it holds.
+    if (activeConnection == self) {
+        LiInterruptConnection();
+    }
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
         [initLock lock];
-        LiStopConnection();
+        if (activeConnection == self) {
+            LiStopConnection();
+            activeConnection = nil;
+            renderer = nil;
+            _callbacks = nil;
+        }
         [initLock unlock];
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), completion);
+        }
     });
 }
 
@@ -395,13 +402,11 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
 
     // Use a lock to ensure that only one thread is initializing
     // or deinitializing a connection at a time.
-    if (initLock == nil) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
         initLock = [[NSLock alloc] init];
-    }
-    
-    if (videoStatsLock == nil) {
         videoStatsLock = [[NSLock alloc] init];
-    }
+    });
     
     NSString *rawAddress = [Utils addressPortStringToAddress:config.host];
     strncpy(_hostString,
@@ -432,8 +437,8 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
     }
     _serverInfo.serverCodecModeSupport = config.serverCodecModeSupport;
 
-    renderer = myRenderer;
-    _callbacks = callbacks;
+    _connectionRenderer = myRenderer;
+    _connectionCallbacks = callbacks;
 
     LiInitializeStreamConfiguration(&_streamConfig);
     _streamConfig.width = config.width;
@@ -498,6 +503,17 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
 -(void) main
 {
     [initLock lock];
+    if (self.cancelled) {
+        [initLock unlock];
+        return;
+    }
+    if (activeConnection) {
+        // A user can start another session before the old screen finishes popping.
+        LiStopConnection();
+    }
+    activeConnection = self;
+    renderer = _connectionRenderer;
+    _callbacks = _connectionCallbacks;
     LiStartConnection(&_serverInfo,
                       &_streamConfig,
                       &_clCallbacks,

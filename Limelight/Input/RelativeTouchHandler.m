@@ -25,10 +25,13 @@ static const int REFERENCE_HEIGHT = 720;
     UIGestureRecognizer* remoteLongPressRecognizer;
 #endif
     
-    UIView* view;
+    __weak UIView* view;
+#if !TARGET_OS_TV
+    double fractionalX, fractionalY;
+#endif
 }
 
-- (id)initWithView:(StreamView*)view {
+- (id)initWithView:(UIView*)view {
     self = [self init];
     self->view = view;
     
@@ -58,6 +61,7 @@ static const int REFERENCE_HEIGHT = 720;
     }
 }
 
+#if TARGET_OS_TV
 - (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
     touchMoved = false;
     peakTouchCount = [[event allTouches] count];
@@ -170,14 +174,89 @@ static const int REFERENCE_HEIGHT = 720;
     }
 }
 
-- (void)touchesCancelled:(NSSet *)touches withEvent:(UIEvent *)event {
+#else
+- (CGPoint)centerOfTouches:(NSSet<UITouch *> *)touches {
+    CGPoint center = CGPointZero;
+    for (UITouch *touch in touches) {
+        CGPoint point = [touch locationInView:view];
+        center.x += point.x;
+        center.y += point.y;
+    }
+    return CGPointMake(center.x / touches.count, center.y / touches.count);
+}
+
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    NSSet<UITouch *> *active = [event touchesForView:view];
+    if (active.count == 1) {
+        [self cancelTouches];
+        peakTouchCount = 1;
+        originalLocation = touchLocation = [touches.anyObject locationInView:view];
+        fractionalX = fractionalY = 0;
+        dragTimer = [NSTimer scheduledTimerWithTimeInterval:0.45 target:self selector:@selector(onDragStart:)
+                                                   userInfo:nil repeats:NO];
+    } else if (active.count > 1) {
+        BOOL moved = touchMoved || isDragging;
+        NSUInteger peak = MAX(active.count, peakTouchCount);
+        [self cancelTouches];
+        peakTouchCount = peak;
+        touchMoved = moved;
+        originalLocation = touchLocation = [self centerOfTouches:active];
+    }
+}
+
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    NSSet<UITouch *> *active = [event touchesForView:view];
+    if (active.count == 0 || active.count != peakTouchCount || active.count > 2) { return; }
+    CGPoint current = [self centerOfTouches:active];
+    CGFloat dx = current.x - touchLocation.x;
+    CGFloat dy = current.y - touchLocation.y;
+    if ([self isConfirmedMove:current from:originalLocation]) {
+        touchMoved = YES;
+        [dragTimer invalidate];
+        dragTimer = nil;
+    }
+    if (active.count == 1) {
+        double gain = 1280.0 / MAX(320.0, CGRectGetWidth(view.bounds));
+        fractionalX += dx * gain;
+        fractionalY += dy * gain;
+        short moveX = (short)trunc(fractionalX);
+        short moveY = (short)trunc(fractionalY);
+        if (moveX || moveY) { LiSendMouseMoveEvent(moveX, moveY); }
+        fractionalX -= moveX;
+        fractionalY -= moveY;
+    } else if (touchMoved) {
+        short vertical = (short)lround(dy * 10);
+        short horizontal = (short)lround(-dx * 10);
+        if (vertical) { LiSendHighResScrollEvent(vertical); }
+        if (horizontal) { LiSendHighResHScrollEvent(horizontal); }
+    }
+    touchLocation = current;
+}
+
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    if ([event touchesForView:view].count > touches.count) { return; }
+    if (!touchMoved && !isDragging && (peakTouchCount == 1 || peakTouchCount == 2)) {
+        int button = peakTouchCount == 2 ? BUTTON_RIGHT : BUTTON_LEFT;
+        LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, button);
+        LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, button);
+    }
+    [self cancelTouches];
+}
+#endif
+
+- (void)cancelTouches {
     [dragTimer invalidate];
     dragTimer = nil;
     if (isDragging) {
-        isDragging = false;
         LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, BUTTON_LEFT);
     }
+    isDragging = NO;
+    touchMoved = NO;
     peakTouchCount = 0;
+}
+
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [self cancelTouches];
 }
 
 #if TARGET_OS_TV

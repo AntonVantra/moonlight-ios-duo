@@ -26,7 +26,7 @@ typedef struct {
 @interface Connection : NSOperation <NSStreamDelegate>
 
 -(id) initWithConfig:(StreamConfiguration*)config renderer:(VideoDecoderRenderer*)myRenderer connectionCallbacks:(id<ConnectionCallbacks>)callbacks;
--(void) terminate;
+-(void) terminateWithCompletion:(dispatch_block_t)completion;
 -(void) main;
 -(BOOL) getVideoStats:(video_stats_t*)stats;
 -(NSString*) getActiveCodecName;

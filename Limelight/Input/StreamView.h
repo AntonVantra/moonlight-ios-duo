@@ -29,9 +29,18 @@
                   config:(StreamConfiguration*)streamConfig;
 - (void) showOnScreenControls;
 - (OnScreenControlsLevel) getCurrentOscState;
+- (CGRect)videoContentRect;
+- (void)setStreamWidth:(int)width height:(int)height;
 
 #if !TARGET_OS_TV
 - (void) updateCursorLocation:(CGPoint)location isMouse:(BOOL)isMouse;
+- (void)setFillVideo:(BOOL)fill;
+- (void)setDirectTouch:(BOOL)direct;
+- (void)toggleSoftwareKeyboard;
+- (BOOL)toggleDesktopModifier:(short)keyCode;
+- (BOOL)isDesktopModifierHeld:(short)keyCode;
+- (void)sendDesktopShortcut:(NSArray<NSNumber *> *)keys;
+- (void)releaseDesktopInput;
 #endif
 
 @end

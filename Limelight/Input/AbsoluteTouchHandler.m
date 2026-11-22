@@ -10,111 +10,134 @@
 
 #include <Limelight.h>
 
-// How long the fingers must be stationary to start a right click
-#define LONG_PRESS_ACTIVATION_DELAY 0.650f
-
-// How far the finger can move before it cancels a right click
-#define LONG_PRESS_ACTIVATION_DELTA 0.01f
-
-// How long the double tap deadzone stays in effect between touch up and touch down
-#define DOUBLE_TAP_DEAD_ZONE_DELAY 0.250f
-
-// How far the finger can move before it can override the double tap deadzone
-#define DOUBLE_TAP_DEAD_ZONE_DELTA 0.025f
-
 @implementation AbsoluteTouchHandler {
-    StreamView* view;
-    
-    NSTimer* longPressTimer;
-    UITouch* lastTouchDown;
-    CGPoint lastTouchDownLocation;
-    UITouch* lastTouchUp;
-    CGPoint lastTouchUpLocation;
+    __weak StreamView *_view;
+    UITouch *_primaryTouch;
+    NSTimer *_rightClickTimer;
+    CGPoint _start;
+    CGPoint _clickLocation;
+    CGPoint _lastTap;
+    NSTimeInterval _lastTapEnd;
+    CGPoint _scrollCenter;
+    BOOL _dragging;
+    BOOL _rightClicked;
+    BOOL _multipleTouches;
 }
 
-- (id)initWithView:(StreamView*)view {
-    self = [self init];
-    self->view = view;
+- (instancetype)initWithView:(StreamView *)view {
+    if ((self = [super init])) {
+        _view = view;
+    }
     return self;
 }
 
-- (void)onLongPressStart:(NSTimer*)timer {
-    // Raise the left click and start a right click
-    LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, BUTTON_LEFT);
-    LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_RIGHT);
+- (void)cancelTimer {
+    [_rightClickTimer invalidate];
+    _rightClickTimer = nil;
 }
 
-- (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
-    // Ignore touch down events with more than one finger
-    if ([[event allTouches] count] > 1) {
-        return;
-    }
-    
-    UITouch* touch = [touches anyObject];
-    CGPoint touchLocation = [touch locationInView:view];
-    
-    // Don't reposition for finger down events within the deadzone. This makes double-clicking easier.
-    if (touch.timestamp - lastTouchUp.timestamp > DOUBLE_TAP_DEAD_ZONE_DELAY ||
-        sqrt(pow((touchLocation.x / view.bounds.size.width) - (lastTouchUpLocation.x / view.bounds.size.width), 2) +
-             pow((touchLocation.y / view.bounds.size.height) - (lastTouchUpLocation.y / view.bounds.size.height), 2)) > DOUBLE_TAP_DEAD_ZONE_DELTA) {
-        [view updateCursorLocation:touchLocation isMouse:NO];
-    }
-    
-    // Press the left button down
-    LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_LEFT);
-    
-    // Start the long press timer
-    longPressTimer = [NSTimer scheduledTimerWithTimeInterval:LONG_PRESS_ACTIVATION_DELAY
-                                                      target:self
-                                                    selector:@selector(onLongPressStart:)
-                                                    userInfo:nil
-                                                     repeats:NO];
-    
-    lastTouchDown = touch;
-    lastTouchDownLocation = touchLocation;
-}
-
-- (void)touchesMoved:(NSSet *)touches withEvent:(UIEvent *)event {
-    // Ignore touch move events with more than one finger
-    if ([[event allTouches] count] > 1) {
-        return;
-    }
-    
-    UITouch* touch = [touches anyObject];
-    CGPoint touchLocation = [touch locationInView:view];
-    
-    if (sqrt(pow((touchLocation.x / view.bounds.size.width) - (lastTouchDownLocation.x / view.bounds.size.width), 2) +
-             pow((touchLocation.y / view.bounds.size.height) - (lastTouchDownLocation.y / view.bounds.size.height), 2)) > LONG_PRESS_ACTIVATION_DELTA) {
-        // Moved too far since touch down. Cancel the long press timer.
-        [longPressTimer invalidate];
-        longPressTimer = nil;
-    }
-    
-    [view updateCursorLocation:[[touches anyObject] locationInView:view] isMouse:NO];
-}
-
-- (void)touchesEnded:(NSSet *)touches withEvent:(UIEvent *)event {
-    // Only fire this logic if all touches have ended
-    if ([[event allTouches] count] == [touches count]) {
-        // Cancel the long press timer
-        [longPressTimer invalidate];
-        longPressTimer = nil;
-
-        // Left button up on finger up
+- (void)cancelTouches {
+    [self cancelTimer];
+    if (_dragging) {
         LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, BUTTON_LEFT);
+    }
+    _dragging = NO;
+    _primaryTouch = nil;
+    _rightClicked = NO;
+    _multipleTouches = NO;
+}
 
-        // Raise right button too in case we triggered a long press gesture
+- (CGPoint)centerOfTouches:(NSSet<UITouch *> *)touches {
+    CGPoint center = CGPointZero;
+    for (UITouch *touch in touches) {
+        CGPoint point = [touch locationInView:_view];
+        center.x += point.x;
+        center.y += point.y;
+    }
+    return CGPointMake(center.x / touches.count, center.y / touches.count);
+}
+
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    NSSet<UITouch *> *active = [event touchesForView:_view];
+    if (active.count > 1) {
+        [self cancelTouches];
+        _multipleTouches = YES;
+        if (active.count == 2) {
+            _scrollCenter = [self centerOfTouches:active];
+        }
+        return;
+    }
+    UITouch *touch = touches.anyObject;
+    CGPoint point = [touch locationInView:_view];
+    if (!CGRectContainsPoint([_view videoContentRect], point)) {
+        return;
+    }
+    _primaryTouch = touch;
+    _start = point;
+    if (_lastTapEnd > 0 && touch.timestamp - _lastTapEnd < 0.28 &&
+        hypot(point.x - _lastTap.x, point.y - _lastTap.y) <= 10) {
+        point = _lastTap;
+    }
+    _clickLocation = point;
+    [_view updateCursorLocation:point isMouse:NO];
+    _rightClickTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 target:self selector:@selector(rightClick:)
+                                                     userInfo:nil repeats:NO];
+}
+
+- (void)rightClick:(NSTimer *)timer {
+    _rightClickTimer = nil;
+    if (_primaryTouch && !_dragging) {
+        LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_RIGHT);
         LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, BUTTON_RIGHT);
-        
-        // Remember this last touch for touch-down deadzoning
-        lastTouchUp = [touches anyObject];
-        lastTouchUpLocation = [lastTouchUp locationInView:view];
+        _rightClicked = YES;
+        _lastTapEnd = 0;
     }
 }
 
-- (void)touchesCancelled:(NSSet *)touches withEvent:(UIEvent *)event {
-    // Treat this as a normal touchesEnded event
-    [self touchesEnded:touches withEvent:event];
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    NSSet<UITouch *> *active = [event touchesForView:_view];
+    if (_multipleTouches && active.count == 2) {
+        CGPoint center = [self centerOfTouches:active];
+        short vertical = (short)lround((center.y - _scrollCenter.y) * 10);
+        short horizontal = (short)lround((_scrollCenter.x - center.x) * 10);
+        if (vertical) { LiSendHighResScrollEvent(vertical); }
+        if (horizontal) { LiSendHighResHScrollEvent(horizontal); }
+        _scrollCenter = center;
+        return;
+    }
+    if (_rightClicked || !_primaryTouch || ![touches containsObject:_primaryTouch]) {
+        return;
+    }
+    CGPoint point = [_primaryTouch locationInView:_view];
+    if (!_dragging && hypot(point.x - _start.x, point.y - _start.y) >= 4) {
+        [self cancelTimer];
+        LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_LEFT);
+        _dragging = YES;
+        _lastTapEnd = 0;
+    }
+    if (_dragging) {
+        [_view updateCursorLocation:point isMouse:NO];
+    }
+}
+
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    if (_multipleTouches) {
+        if ([event touchesForView:_view].count <= touches.count) { [self cancelTouches]; }
+        return;
+    }
+    if (_primaryTouch && [touches containsObject:_primaryTouch]) {
+        if (!_dragging && !_rightClicked) {
+            LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_LEFT);
+            LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, BUTTON_LEFT);
+            _lastTapEnd = _primaryTouch.timestamp;
+            _lastTap = _clickLocation;
+        }
+        [self cancelTouches];
+    }
+}
+
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [self cancelTouches];
 }
 
 @end

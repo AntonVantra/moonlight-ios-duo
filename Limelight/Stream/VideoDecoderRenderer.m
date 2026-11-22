@@ -21,8 +21,7 @@ extern int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size,
 
 @implementation VideoDecoderRenderer {
     StreamView* _view;
-    id<ConnectionCallbacks> _callbacks;
-    float _streamAspectRatio;
+    __weak id<ConnectionCallbacks> _callbacks;
     
     AVSampleBufferDisplayLayer* displayLayer;
     int videoFormat;
@@ -39,19 +38,8 @@ extern int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size,
 
 - (void)layoutDisplayLayer
 {
-    // Ensure the AVSampleBufferDisplayLayer is sized to preserve the aspect ratio
-    // of the video stream. We used to use AVLayerVideoGravityResizeAspect, but that
-    // respects the PAR encoded in the SPS which causes our computed video-relative
-    // touch location to be wrong in StreamView if the aspect ratio of the host
-    // desktop doesn't match the aspect ratio of the stream.
-    CGSize videoSize;
-    if (_view.bounds.size.width > _view.bounds.size.height * _streamAspectRatio) {
-        videoSize = CGSizeMake(_view.bounds.size.height * _streamAspectRatio, _view.bounds.size.height);
-    } else {
-        videoSize = CGSizeMake(_view.bounds.size.width, _view.bounds.size.width / _streamAspectRatio);
-    }
-    displayLayer.position = CGPointMake(CGRectGetMidX(_view.bounds), CGRectGetMidY(_view.bounds));
-    displayLayer.bounds = CGRectMake(0, 0, videoSize.width, videoSize.height);
+    // Keep the encoded frame and absolute pointer on the same rectangle.
+    displayLayer.frame = [_view videoContentRect];
 }
 
 // Called when the view size changes (e.g. folding or unfolding iPhone Duo)
@@ -95,13 +83,12 @@ extern int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size,
     }
 }
 
-- (id)initWithView:(StreamView*)view callbacks:(id<ConnectionCallbacks>)callbacks streamAspectRatio:(float)aspectRatio useFramePacing:(BOOL)useFramePacing
+- (id)initWithView:(StreamView*)view callbacks:(id<ConnectionCallbacks>)callbacks useFramePacing:(BOOL)useFramePacing
 {
     self = [super init];
     
     _view = view;
     _callbacks = callbacks;
-    _streamAspectRatio = aspectRatio;
     framePacing = useFramePacing;
     
     parameterSetBuffers = [[NSMutableArray alloc] init];
@@ -109,6 +96,10 @@ extern int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size,
     [self reinitializeDisplayLayer];
     
     return self;
+}
+
+- (void)detachDisplayLayer {
+    [displayLayer removeFromSuperlayer];
 }
 
 - (void)setupWithVideoFormat:(int)videoFormat width:(int)videoWidth height:(int)videoHeight frameRate:(int)frameRate

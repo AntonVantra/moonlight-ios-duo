@@ -23,7 +23,7 @@
     StreamConfiguration* _config;
 
     UIView* _renderView;
-    id<ConnectionCallbacks> _callbacks;
+    __weak id<ConnectionCallbacks> _callbacks;
     Connection* _connection;
     VideoDecoderRenderer* _renderer;
 }
@@ -39,6 +39,7 @@
 }
 
 - (void)main {
+    if (self.cancelled) { return; }
     [CryptoManager generateKeyPairUsingSSL];
     
     HttpManager* hMan = [[HttpManager alloc] initWithAddress:_config.host httpsPort:_config.httpsPort
@@ -47,6 +48,7 @@
     ServerInfoResponse* serverInfoResp = [[ServerInfoResponse alloc] init];
     [hMan executeRequestSynchronously:[HttpRequest requestForResponse:serverInfoResp withUrlRequest:[hMan newServerInfoRequest:false]
                                        fallbackError:401 fallbackRequest:[hMan newHttpServerInfoRequest]]];
+    if (self.cancelled) { return; }
     NSString* pairStatus = [serverInfoResp getStringTag:@"PairStatus"];
     NSString* appversion = [serverInfoResp getStringTag:@"appversion"];
     NSString* gfeVersion = [serverInfoResp getStringTag:@"GfeVersion"];
@@ -100,7 +102,10 @@
     
     // Initializing the renderer must be done on the main thread
     dispatch_async(dispatch_get_main_queue(), ^{
-        VideoDecoderRenderer* renderer = [[VideoDecoderRenderer alloc] initWithView:self->_renderView callbacks:self->_callbacks streamAspectRatio:(float)self->_config.width / (float)self->_config.height useFramePacing:self->_config.useFramePacing];
+        if (self.cancelled) { return; }
+        VideoDecoderRenderer* renderer = [[VideoDecoderRenderer alloc] initWithView:self->_renderView
+                                                                         callbacks:self->_callbacks
+                                                                    useFramePacing:self->_config.useFramePacing];
         self->_renderer = renderer;
         self->_connection = [[Connection alloc] initWithConfig:self->_config renderer:renderer connectionCallbacks:self->_callbacks];
         NSOperationQueue* opQueue = [[NSOperationQueue alloc] init];
@@ -116,12 +121,35 @@
 
 - (void) stopStream
 {
-    [_connection terminate];
+    [self stopStreamWithCompletion:nil];
+}
+
+- (void)stopStreamWithCompletion:(dispatch_block_t)completion {
+    [self cancel];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        Connection *connection = self->_connection;
+        if (connection) {
+            [connection terminateWithCompletion:^{
+                if (self->_connection == connection) {
+                    [self->_renderer detachDisplayLayer];
+                    self->_renderer = nil;
+                    self->_connection = nil;
+                }
+                if (completion) { completion(); }
+            }];
+        } else if (completion) {
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                [self waitUntilFinished];
+                dispatch_async(dispatch_get_main_queue(), completion);
+            });
+        }
+    });
 }
 
 - (BOOL) launchApp:(HttpManager*)hMan receiveSessionUrl:(NSString**)sessionUrl {
     HttpResponse* launchResp = [[HttpResponse alloc] init];
     [hMan executeRequestSynchronously:[HttpRequest requestForResponse:launchResp withUrlRequest:[hMan newLaunchOrResumeRequest:@"launch" config:_config]]];
+    if (self.cancelled) { return NO; }
     NSString *gameSession = [launchResp getStringTag:@"gamesession"];
     if (![launchResp isStatusOk]) {
         [_callbacks launchFailed:launchResp.statusMessage];
@@ -140,6 +168,7 @@
 - (BOOL) resumeApp:(HttpManager*)hMan receiveSessionUrl:(NSString**)sessionUrl {
     HttpResponse* resumeResp = [[HttpResponse alloc] init];
     [hMan executeRequestSynchronously:[HttpRequest requestForResponse:resumeResp withUrlRequest:[hMan newLaunchOrResumeRequest:@"resume" config:_config]]];
+    if (self.cancelled) { return NO; }
     NSString* resume = [resumeResp getStringTag:@"resume"];
     if (![resumeResp isStatusOk]) {
         [_callbacks launchFailed:resumeResp.statusMessage];

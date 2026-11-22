@@ -12,6 +12,10 @@
 #import "StreamManager.h"
 #import "ControllerSupport.h"
 #import "DataManager.h"
+#import "DesktopGeometry.h"
+#if !TARGET_OS_TV
+#import "RelativeTouchHandler.h"
+#endif
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -30,6 +34,57 @@
 - (id)initWithRefreshRate:(float)arg1 videoDynamicRange:(int)arg2;
 @end
 
+#if !TARGET_OS_TV
+typedef NS_ENUM(NSInteger, DesktopLayout) {
+    DesktopLayoutAutomatic,
+    DesktopLayoutFullScreen,
+    DesktopLayoutLaptop,
+};
+
+@interface DesktopTrackpadView : UIView
+- (void)releasePointer;
+@end
+
+@implementation DesktopTrackpadView {
+    RelativeTouchHandler *_touchHandler;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    if ((self = [super initWithFrame:frame])) {
+        self.multipleTouchEnabled = YES;
+        self.backgroundColor = [UIColor colorWithWhite:0.12 alpha:1];
+        self.accessibilityLabel = @"Windows trackpad";
+        _touchHandler = [[RelativeTouchHandler alloc] initWithView:self];
+    }
+    return self;
+}
+
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [_touchHandler touchesBegan:touches withEvent:event];
+}
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [_touchHandler touchesMoved:touches withEvent:event];
+}
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [_touchHandler touchesEnded:touches withEvent:event];
+}
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [self releasePointer];
+}
+- (void)releasePointer {
+    [_touchHandler cancelTouches];
+}
+@end
+
+static DesktopRect DesktopRectFromCGRect(CGRect rect) {
+    return (DesktopRect){rect.origin.x, rect.origin.y, rect.size.width, rect.size.height};
+}
+
+static CGRect DesktopCGRect(DesktopRect rect) {
+    return CGRectMake(rect.x, rect.y, rect.width, rect.height);
+}
+#endif
+
 @implementation StreamFrameViewController {
     ControllerSupport *_controllerSupport;
     StreamManager *_streamMan;
@@ -44,10 +99,24 @@
     UILabel *_tipLabel;
     UIActivityIndicatorView *_spinner;
     StreamView *_streamView;
-    CGSize _lastLayoutSize;
+    CGRect _lastVideoFrame;
+    BOOL _leaving;
+#if !TARGET_OS_TV
+    DesktopPoseObserver *_desktopPose;
+    DesktopTrackpadView *_desktopTrackpad;
+    UIButton *_desktopMenuButton;
+    DesktopLayout _desktopLayout;
+    BOOL _desktopDirectTouch;
+    BOOL _desktopFill;
+    BOOL _adaptiveDesktop;
+    BOOL _desktopReady;
+    BOOL _restartingDesktop;
+    NSInteger _automaticRetries;
+    int _fixedWidth, _fixedHeight, _requestedFPS;
+    NSTimer *_desktopResizeTimer;
+#endif
     UIScrollView *_scrollView;
     BOOL _userIsInteracting;
-    CGSize _keyboardSize;
     
 #if !TARGET_OS_TV
     UIScreenEdgePanGestureRecognizer *_exitSwipeRecognizer;
@@ -61,6 +130,9 @@
 #if !TARGET_OS_TV
     [[self revealViewController] setPrimaryViewController:self];
 #endif
+    if (!_streamMan && !_leaving) {
+        [self beginStream];
+    }
 }
 
 #if TARGET_OS_TV
@@ -85,6 +157,14 @@
     [UIApplication sharedApplication].idleTimerDisabled = YES;
     
     _settings = [[[DataManager alloc] init] getSettings];
+#if !TARGET_OS_TV
+    _fixedWidth = self.streamConfig.width;
+    _fixedHeight = self.streamConfig.height;
+    _requestedFPS = self.streamConfig.frameRate;
+    _desktopDirectTouch = _settings.absoluteTouchMode;
+    _adaptiveDesktop = ![[NSUserDefaults standardUserDefaults] boolForKey:@"DesktopUseFixedResolution"];
+    _automaticRetries = 1;
+#endif
     
     _stageLabel = [[UILabel alloc] init];
     [_stageLabel setUserInteractionEnabled:NO];
@@ -153,43 +233,19 @@
     _tipLabel.textAlignment = NSTextAlignmentCenter;
     _tipLabel.center = CGPointMake(self.view.frame.size.width / 2, self.view.frame.size.height * 0.9);
     
-    _streamMan = [[StreamManager alloc] initWithConfig:self.streamConfig
-                                            renderView:_streamView
-                                   connectionCallbacks:self];
-    NSOperationQueue* opQueue = [[NSOperationQueue alloc] init];
-    [opQueue addOperation:_streamMan];
-    
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(applicationWillResignActive:)
-                                                 name:UIApplicationWillResignActiveNotification
-                                               object:nil];
-    
-    [[NSNotificationCenter defaultCenter] addObserver: self
-                                             selector: @selector(applicationDidBecomeActive:)
-                                                 name: UIApplicationDidBecomeActiveNotification
-                                               object: nil];
-    
-    [[NSNotificationCenter defaultCenter] addObserver: self
-                                             selector: @selector(applicationDidEnterBackground:)
-                                                 name: UIApplicationDidEnterBackgroundNotification
-                                               object: nil];
-
-#if 0
-    // FIXME: This doesn't work reliably on iPad for some reason. Showing and hiding the keyboard
-    // several times in a row will not correctly restore the state of the UIScrollView.
-    [[NSNotificationCenter defaultCenter] addObserver: self
-                                             selector: @selector(keyboardWillShow:)
-                                                 name: UIKeyboardWillShowNotification
-                                               object: nil];
-    
-    [[NSNotificationCenter defaultCenter] addObserver: self
-                                             selector: @selector(keyboardWillHide:)
-                                                 name: UIKeyboardWillHideNotification
-                                               object: nil];
+    NSNotificationCenter *notifications = [NSNotificationCenter defaultCenter];
+#if TARGET_OS_TV
+    [notifications addObserver:self selector:@selector(applicationWillResignActive:) name:UIApplicationWillResignActiveNotification object:nil];
+    [notifications addObserver:self selector:@selector(applicationDidBecomeActive:) name:UIApplicationDidBecomeActiveNotification object:nil];
+    [notifications addObserver:self selector:@selector(applicationDidEnterBackground:) name:UIApplicationDidEnterBackgroundNotification object:nil];
+#else
+    [notifications addObserver:self selector:@selector(applicationWillResignActive:) name:UISceneWillDeactivateNotification object:nil];
+    [notifications addObserver:self selector:@selector(applicationDidBecomeActive:) name:UISceneDidActivateNotification object:nil];
+    [notifications addObserver:self selector:@selector(applicationDidEnterBackground:) name:UISceneDidEnterBackgroundNotification object:nil];
 #endif
-    
-    // Only enable scroll and zoom in absolute touch mode
-    if (_settings.absoluteTouchMode) {
+
+    // Desktop also allows local pinch-to-zoom while in trackpad mode.
+    if (_settings.absoluteTouchMode || self.streamConfig.desktopMode) {
         _scrollView = [[UIScrollView alloc] initWithFrame:self.view.bounds];
         _scrollView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
 #if !TARGET_OS_TV
@@ -198,7 +254,14 @@
         [_scrollView setShowsHorizontalScrollIndicator:NO];
         [_scrollView setShowsVerticalScrollIndicator:NO];
         [_scrollView setDelegate:self];
-        [_scrollView setMaximumZoomScale:10.0f];
+        [_scrollView setMaximumZoomScale:self.streamConfig.desktopMode ? 4.0 : 10.0];
+#if !TARGET_OS_TV
+        if (self.streamConfig.desktopMode) {
+            _scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+            _scrollView.delaysContentTouches = NO;
+            _scrollView.panGestureRecognizer.enabled = NO;
+        }
+#endif
         
         // Add StreamView inside a UIScrollView for absolute mode
         [_scrollView addSubview:_streamView];
@@ -212,40 +275,286 @@
     [self.view addSubview:_stageLabel];
     [self.view addSubview:_spinner];
     [self.view addSubview:_tipLabel];
+#if !TARGET_OS_TV
+    if (self.streamConfig.desktopMode) {
+        [self installDesktopControls];
+    }
+#endif
 }
 
 - (UIView *)viewForZoomingInScrollView:(UIScrollView *)scrollView {
     return _streamView;
 }
 
-// The window can change size during a stream, for example when folding or
-// unfolding iPhone Duo. Keep the stream view and video layer filling it.
+- (void)scrollViewDidZoom:(UIScrollView *)scrollView {
+#if !TARGET_OS_TV
+    if (self.streamConfig.desktopMode) {
+        scrollView.panGestureRecognizer.enabled = scrollView.zoomScale > 1.001;
+    }
+#endif
+}
+
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
 
-    CGSize size = self.view.bounds.size;
-    if (CGSizeEqualToSize(size, _lastLayoutSize)) {
+    CGRect bounds = self.view.bounds;
+    CGRect videoFrame = bounds;
+#if !TARGET_OS_TV
+    if (_desktopTrackpad) {
+        BOOL laptop = _desktopLayout == DesktopLayoutLaptop ||
+                      (_desktopLayout == DesktopLayoutAutomatic && _desktopPose.isLaptopPose);
+        DesktopPanes panes = DesktopLaptopPanes(DesktopRectFromCGRect(bounds),
+                                                DesktopRectFromCGRect(_desktopPose.horizontalDivision),
+                                                laptop);
+        CGRect trackpadFrame = DesktopCGRect(panes.trackpad);
+        if (!CGRectEqualToRect(trackpadFrame, _desktopTrackpad.frame)) {
+            [_desktopTrackpad releasePointer];
+            _desktopTrackpad.frame = trackpadFrame;
+        }
+        _desktopTrackpad.hidden = CGRectIsEmpty(trackpadFrame);
+        videoFrame = DesktopCGRect(panes.video);
+    }
+#endif
+    if (CGRectEqualToRect(videoFrame, _lastVideoFrame)) {
         return;
     }
-    _lastLayoutSize = size;
+    _lastVideoFrame = videoFrame;
 
-    if (_scrollView != nil) {
-        // Reset any zoom so the stream view can match the new size
-        [_scrollView setZoomScale:1.0f animated:NO];
-        _streamView.frame = _scrollView.bounds;
-        _scrollView.contentSize = _scrollView.bounds.size;
+    if (_scrollView) {
+        [_scrollView setZoomScale:1 animated:NO];
+        _scrollView.frame = videoFrame;
+        _scrollView.contentOffset = CGPointZero;
+        _streamView.frame = (CGRect){CGPointZero, videoFrame.size};
+        _scrollView.contentSize = videoFrame.size;
+    } else {
+        _streamView.frame = videoFrame;
     }
 
-    _stageLabel.center = CGPointMake(size.width / 2, _stageLabel.center.y);
-    _spinner.center = CGPointMake(size.width / 2, _spinner.center.y);
-    _tipLabel.center = CGPointMake(size.width / 2, _tipLabel.center.y);
-
+    _stageLabel.center = CGPointMake(CGRectGetMidX(videoFrame), CGRectGetMidY(videoFrame));
+    _spinner.center = CGPointMake(CGRectGetMidX(videoFrame), CGRectGetMidY(videoFrame) - 36);
+    _tipLabel.center = CGPointMake(CGRectGetMidX(videoFrame), CGRectGetMaxY(videoFrame) - 36);
     [_streamMan updateRendererLayout];
+#if !TARGET_OS_TV
+    [self scheduleDesktopResolutionUpdate];
+#endif
 }
+
+- (void)beginStream {
+#if !TARGET_OS_TV
+    if (self.streamConfig.desktopMode) {
+        DesktopPixels size = [self desktopStreamPixels];
+        self.streamConfig.width = size.width;
+        self.streamConfig.height = size.height;
+        NSInteger maxFPS = self.view.window.windowScene.screen.maximumFramesPerSecond;
+        self.streamConfig.frameRate = maxFPS > 0 ? MIN(_requestedFPS, (int)maxFPS) : _requestedFPS;
+        [_streamView setStreamWidth:size.width height:size.height];
+    }
+#endif
+    [UIApplication sharedApplication].idleTimerDisabled = YES;
+    _streamMan = [[StreamManager alloc] initWithConfig:self.streamConfig renderView:_streamView connectionCallbacks:self];
+    NSOperationQueue *queue = [[NSOperationQueue alloc] init];
+    [queue addOperation:_streamMan];
+}
+
+#if !TARGET_OS_TV
+- (DesktopPixels)desktopStreamPixels {
+    if (_adaptiveDesktop) {
+        CGFloat scale = self.view.window.windowScene.screen.nativeScale;
+        DesktopPixels pixels = DesktopAdaptivePixels(DesktopRectFromCGRect(_lastVideoFrame), scale, 3840);
+        if (pixels.width > 0 && pixels.height > 0) { return pixels; }
+    }
+    return (DesktopPixels){_fixedWidth, _fixedHeight};
+}
+
+- (void)scheduleDesktopResolutionUpdate {
+    [_desktopResizeTimer invalidate];
+    _desktopResizeTimer = nil;
+    if (!_desktopReady || !_adaptiveDesktop || _restartingDesktop || _leaving) {
+        return;
+    }
+    if (!DesktopResolutionChanged(self.streamConfig.width, self.streamConfig.height, [self desktopStreamPixels])) {
+        return;
+    }
+    _desktopResizeTimer = [NSTimer scheduledTimerWithTimeInterval:1.15 target:self
+                                                       selector:@selector(applyDesktopResize:)
+                                                       userInfo:nil repeats:NO];
+}
+
+- (void)applyDesktopResize:(NSTimer *)timer {
+    _desktopResizeTimer = nil;
+    if (_desktopReady && !_userIsInteracting &&
+        self.view.window.windowScene.activationState == UISceneActivationStateForegroundActive) {
+        [self restartDesktopStream:@"Matching display size"];
+    }
+}
+
+- (void)restartDesktopStream:(NSString *)status {
+    if (_restartingDesktop || _leaving) { return; }
+    _restartingDesktop = YES;
+    _desktopReady = NO;
+    [_desktopResizeTimer invalidate];
+    _desktopResizeTimer = nil;
+    [_statsUpdateTimer invalidate];
+    _statsUpdateTimer = nil;
+    _overlayView.hidden = YES;
+    [_streamView releaseDesktopInput];
+    [_desktopTrackpad releasePointer];
+    _streamView.userInteractionEnabled = NO;
+    _desktopTrackpad.userInteractionEnabled = NO;
+    _stageLabel.text = status;
+    [_stageLabel sizeToFit];
+    _stageLabel.center = CGPointMake(CGRectGetMidX(_lastVideoFrame), CGRectGetMidY(_lastVideoFrame));
+    _stageLabel.hidden = NO;
+    [_spinner startAnimating];
+
+    [_streamMan stopStreamWithCompletion:^{
+        if (self->_leaving) { return; }
+        self->_restartingDesktop = NO;
+        [self beginStream];
+    }];
+}
+
+- (void)installDesktopControls {
+    __weak StreamFrameViewController *weakSelf = self;
+    _desktopPose = [[DesktopPoseObserver alloc] initWithView:self.view onChange:^{
+        [weakSelf.view setNeedsLayout];
+    }];
+    _desktopTrackpad = [[DesktopTrackpadView alloc] initWithFrame:CGRectZero];
+    _desktopTrackpad.hidden = YES;
+    _desktopTrackpad.userInteractionEnabled = NO;
+    [self.view insertSubview:_desktopTrackpad belowSubview:_stageLabel];
+    _streamView.userInteractionEnabled = NO;
+
+    UIButtonConfiguration *keyboardStyle = [UIButtonConfiguration grayButtonConfiguration];
+    keyboardStyle.image = [UIImage systemImageNamed:@"keyboard"];
+    UIButton *keyboard = [UIButton buttonWithConfiguration:keyboardStyle primaryAction:
+        [UIAction actionWithHandler:^(UIAction *action) {
+            StreamFrameViewController *controller = weakSelf;
+            if (controller && controller->_desktopReady) {
+                [controller->_streamView toggleSoftwareKeyboard];
+            }
+        }]];
+    keyboard.accessibilityLabel = @"Windows keyboard";
+
+    UIButtonConfiguration *menuStyle = [UIButtonConfiguration grayButtonConfiguration];
+    menuStyle.image = [UIImage systemImageNamed:@"ellipsis.circle"];
+    _desktopMenuButton = [UIButton buttonWithConfiguration:menuStyle primaryAction:nil];
+    _desktopMenuButton.accessibilityLabel = @"Desktop controls";
+    _desktopMenuButton.showsMenuAsPrimaryAction = YES;
+    [self updateDesktopMenu];
+
+    UIStackView *controls = [[UIStackView alloc] initWithArrangedSubviews:@[keyboard, _desktopMenuButton]];
+    controls.translatesAutoresizingMaskIntoConstraints = NO;
+    controls.spacing = 4;
+    [self.view addSubview:controls];
+    UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [controls.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-8],
+        [controls.topAnchor constraintEqualToAnchor:safe.topAnchor constant:8],
+        [keyboard.widthAnchor constraintGreaterThanOrEqualToConstant:44],
+        [keyboard.heightAnchor constraintGreaterThanOrEqualToConstant:44],
+        [_desktopMenuButton.widthAnchor constraintGreaterThanOrEqualToConstant:44],
+    ]];
+}
+
+- (void)updateDesktopMenu {
+    __weak StreamFrameViewController *weakSelf = self;
+    NSMutableArray<UIAction *> *layouts = [NSMutableArray array];
+    NSArray<NSString *> *layoutNames = @[@"Automatic", @"Full screen", @"Laptop"];
+    for (NSInteger i = 0; i < (NSInteger)layoutNames.count; i++) {
+        UIAction *choice = [UIAction actionWithTitle:layoutNames[i] image:nil identifier:nil handler:^(UIAction *action) {
+            StreamFrameViewController *controller = weakSelf;
+            if (!controller) { return; }
+            controller->_desktopLayout = (DesktopLayout)i;
+            [controller.view setNeedsLayout];
+            [controller updateDesktopMenu];
+        }];
+        choice.state = _desktopLayout == i ? UIMenuElementStateOn : UIMenuElementStateOff;
+        [layouts addObject:choice];
+    }
+
+    NSMutableArray<UIAction *> *modifiers = [NSMutableArray array];
+    NSArray<NSString *> *names = @[@"Ctrl", @"Alt", @"Shift", @"Windows"];
+    NSArray<NSNumber *> *keys = @[@0xa2, @0xa4, @0xa0, @0x5b];
+    for (NSUInteger i = 0; i < names.count; i++) {
+        short keyCode = keys[i].shortValue;
+        UIAction *modifier = [UIAction actionWithTitle:names[i] image:nil identifier:nil handler:^(UIAction *action) {
+            StreamFrameViewController *controller = weakSelf;
+            if (!controller || !controller->_desktopReady) { return; }
+            [controller->_streamView toggleDesktopModifier:keyCode];
+            [controller updateDesktopMenu];
+        }];
+        modifier.state = [_streamView isDesktopModifierHeld:keyCode] ? UIMenuElementStateOn : UIMenuElementStateOff;
+        [modifiers addObject:modifier];
+    }
+
+    NSDictionary<NSString *, NSArray<NSNumber *> *> *shortcutKeys = @{
+        @"Alt+Tab": @[@0xa4, @0x09], @"Copy": @[@0xa2, @0x43], @"Paste": @[@0xa2, @0x56],
+        @"Select all": @[@0xa2, @0x41], @"Show desktop": @[@0x5b, @0x44],
+        @"File Explorer": @[@0x5b, @0x45], @"Task Manager": @[@0xa2, @0xa0, @0x1b],
+        @"Escape": @[@0x1b], @"Tab": @[@0x09], @"Delete": @[@0x2e],
+        @"Left": @[@0x25], @"Up": @[@0x26], @"Right": @[@0x27], @"Down": @[@0x28]
+    };
+    NSMutableArray<UIAction *> *shortcuts = [NSMutableArray array];
+    for (NSString *title in @[@"Alt+Tab", @"Copy", @"Paste", @"Select all", @"Show desktop", @"File Explorer",
+                               @"Task Manager", @"Escape", @"Tab", @"Delete", @"Left", @"Up", @"Right", @"Down"]) {
+        NSArray<NSNumber *> *chord = shortcutKeys[title];
+        [shortcuts addObject:[UIAction actionWithTitle:title image:nil identifier:nil handler:^(UIAction *action) {
+            StreamFrameViewController *controller = weakSelf;
+            if (controller && controller->_desktopReady) {
+                [controller->_streamView sendDesktopShortcut:chord];
+            }
+        }]];
+    }
+
+    UIAction *touch = [UIAction actionWithTitle:_desktopDirectTouch ? @"Switch to trackpad" : @"Switch to direct touch"
+                                        image:nil identifier:nil handler:^(UIAction *action) {
+        StreamFrameViewController *controller = weakSelf;
+        if (!controller) { return; }
+        controller->_desktopDirectTouch = !controller->_desktopDirectTouch;
+        [controller->_streamView setDirectTouch:controller->_desktopDirectTouch];
+        [controller updateDesktopMenu];
+    }];
+    UIAction *fit = [UIAction actionWithTitle:_desktopFill ? @"Fit entire desktop" : @"Fill screen (crop edges)"
+                                       image:nil identifier:nil handler:^(UIAction *action) {
+        StreamFrameViewController *controller = weakSelf;
+        if (!controller) { return; }
+        controller->_desktopFill = !controller->_desktopFill;
+        [controller->_streamView setFillVideo:controller->_desktopFill];
+        [controller->_streamMan updateRendererLayout];
+        [controller updateDesktopMenu];
+    }];
+    UIAction *resolution = [UIAction actionWithTitle:_adaptiveDesktop ? @"Use resolution from Settings" : @"Match window resolution"
+                                              image:nil identifier:nil handler:^(UIAction *action) {
+        StreamFrameViewController *controller = weakSelf;
+        if (!controller || !controller->_desktopReady) { return; }
+        controller->_adaptiveDesktop = !controller->_adaptiveDesktop;
+        [[NSUserDefaults standardUserDefaults] setBool:!controller->_adaptiveDesktop forKey:@"DesktopUseFixedResolution"];
+        [controller restartDesktopStream:@"Changing resolution"];
+        [controller updateDesktopMenu];
+    }];
+    UIAction *disconnect = [UIAction actionWithTitle:@"Disconnect" image:nil identifier:nil handler:^(UIAction *action) {
+        [weakSelf returnToMainFrame];
+    }];
+
+    _desktopMenuButton.menu = [UIMenu menuWithChildren:@[
+        [UIMenu menuWithTitle:@"Layout" children:layouts], touch, fit, resolution,
+        [UIMenu menuWithTitle:@"Hold modifiers" children:modifiers],
+        [UIMenu menuWithTitle:@"Windows shortcuts" children:shortcuts], disconnect
+    ]];
+}
+#endif
 
 - (void)willMoveToParentViewController:(UIViewController *)parent {
     // Only cleanup when we're being destroyed
     if (parent == nil) {
+        _leaving = YES;
+#if !TARGET_OS_TV
+        [_desktopResizeTimer invalidate];
+        _desktopResizeTimer = nil;
+        [_desktopTrackpad releasePointer];
+        [_streamView releaseDesktopInput];
+#endif
         [_controllerSupport cleanup];
         [UIApplication sharedApplication].idleTimerDisabled = NO;
         [_streamMan stopStream];
@@ -256,30 +565,6 @@
         [[NSNotificationCenter defaultCenter] removeObserver:self];
     }
 }
-
-#if 0
-- (void)keyboardWillShow:(NSNotification *)notification {
-    _keyboardSize = [[[notification userInfo] objectForKey:UIKeyboardFrameBeginUserInfoKey] CGRectValue].size;
-
-    [UIView animateWithDuration:0.3 animations:^{
-        CGRect frame = self->_scrollView.frame;
-        frame.size.height -= self->_keyboardSize.height;
-        self->_scrollView.frame = frame;
-    }];
-}
-
--(void)keyboardWillHide:(NSNotification *)notification {
-    // NOTE: UIKeyboardFrameEndUserInfoKey returns a different keyboard size
-    // than UIKeyboardFrameBeginUserInfoKey, so it's unsuitable for use here
-    // to undo the changes made by keyboardWillShow.
-    
-    [UIView animateWithDuration:0.3 animations:^{
-        CGRect frame = self->_scrollView.frame;
-        frame.size.height += self->_keyboardSize.height;
-        self->_scrollView.frame = frame;
-    }];
-}
-#endif
 
 - (void)updateStatsOverlay {
     NSString* overlayText = [self->_streamMan getStatsOverlayText];
@@ -334,6 +619,7 @@
 }
 
 - (void) returnToMainFrame {
+    _leaving = YES;
     // Reset display mode back to default
     [self updatePreferredDisplayMode:NO];
     
@@ -345,6 +631,14 @@
 
 // This will fire if the user opens control center or gets a low battery message
 - (void)applicationWillResignActive:(NSNotification *)notification {
+#if !TARGET_OS_TV
+    if (notification.object != self.view.window.windowScene) { return; }
+    if (self.streamConfig.desktopMode) {
+        [_streamView releaseDesktopInput];
+        [_desktopTrackpad releasePointer];
+        [self updateDesktopMenu];
+    }
+#endif
     if (_inactivityTimer != nil) {
         [_inactivityTimer invalidate];
     }
@@ -369,6 +663,10 @@
 }
 
 - (void)applicationDidBecomeActive:(NSNotification *)notification {
+#if !TARGET_OS_TV
+    if (notification.object != self.view.window.windowScene) { return; }
+    [self scheduleDesktopResolutionUpdate];
+#endif
     // Stop the background timer, since we're foregrounded again
     if (_inactivityTimer != nil) {
         Log(LOG_I, @"Stopping inactivity timer after becoming active again");
@@ -378,7 +676,10 @@
 }
 
 // This fires when the home button is pressed
-- (void)applicationDidEnterBackground:(UIApplication *)application {
+- (void)applicationDidEnterBackground:(NSNotification *)notification {
+#if !TARGET_OS_TV
+    if (notification.object != self.view.window.windowScene) { return; }
+#endif
     Log(LOG_I, @"Terminating stream immediately for backgrounding");
 
     if (_inactivityTimer != nil) {
@@ -398,6 +699,16 @@
 - (void) connectionStarted {
     Log(LOG_I, @"Connection started");
     dispatch_async(dispatch_get_main_queue(), ^{
+        if (self->_leaving) { return; }
+#if !TARGET_OS_TV
+        if (self.streamConfig.desktopMode) {
+            self->_desktopReady = YES;
+            self->_streamView.userInteractionEnabled = YES;
+            self->_desktopTrackpad.userInteractionEnabled = YES;
+            [self->_streamView becomeFirstResponder];
+            [self scheduleDesktopResolutionUpdate];
+        }
+#endif
         // Leave the spinner spinning until it's obscured by
         // the first frame of video.
         self->_stageLabel.hidden = YES;
@@ -420,10 +731,27 @@
 - (void)connectionTerminated:(int)errorCode {
     Log(LOG_I, @"Connection terminated: %d", errorCode);
     
+#if !TARGET_OS_TV
+    if (self.streamConfig.desktopMode && (errorCode == ML_ERROR_NO_VIDEO_TRAFFIC ||
+        errorCode == ML_ERROR_NO_VIDEO_FRAME || errorCode > 0 || errorCode == -1)) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self->_leaving || self->_restartingDesktop) { return; }
+            if (self->_desktopReady && self->_automaticRetries > 0 &&
+                self.view.window.windowScene.activationState == UISceneActivationStateForegroundActive) {
+                self->_automaticRetries--;
+                [self restartDesktopStream:@"Reconnecting"];
+            } else {
+                [self showDesktopConnectionError:@"The connection dropped. Check that Tailscale and the PC are still online."];
+            }
+        });
+        return;
+    }
+#endif
     unsigned int portFlags = LiGetPortFlagsFromTerminationErrorCode(errorCode);
     unsigned int portTestResults = LiTestClientConnectivity(CONN_TEST_SERVER, 443, portFlags);
     
     dispatch_async(dispatch_get_main_queue(), ^{
+        if (self->_leaving) { return; }
         // Allow the display to go to sleep now
         [UIApplication sharedApplication].idleTimerDisabled = NO;
         
@@ -515,6 +843,15 @@
 - (void) stageFailed:(const char*)stageName withError:(int)errorCode portTestFlags:(int)portTestFlags {
     Log(LOG_I, @"Stage %s failed: %d", stageName, errorCode);
     
+#if !TARGET_OS_TV
+    if (self.streamConfig.desktopMode) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self->_leaving || self->_restartingDesktop) { return; }
+            [self showDesktopConnectionError:[NSString stringWithFormat:@"%s failed with error %d", stageName, errorCode]];
+        });
+        return;
+    }
+#endif
     unsigned int portTestResults = LiTestClientConnectivity(CONN_TEST_SERVER, 443, portTestFlags);
 
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -551,6 +888,13 @@
         // Allow the display to go to sleep now
         [UIApplication sharedApplication].idleTimerDisabled = NO;
         
+        if (self->_leaving) { return; }
+#if !TARGET_OS_TV
+        if (self.streamConfig.desktopMode) {
+            if (!self->_restartingDesktop) { [self showDesktopConnectionError:message]; }
+            return;
+        }
+#endif
         UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Connection Error"
                                                                        message:message
                                                                 preferredStyle:UIAlertControllerStyleAlert];
@@ -561,6 +905,37 @@
         [self presentViewController:alert animated:YES completion:nil];
     });
 }
+
+#if !TARGET_OS_TV
+- (void)showDesktopConnectionError:(NSString *)message {
+    _desktopReady = NO;
+    [_streamView releaseDesktopInput];
+    [_desktopTrackpad releasePointer];
+    _streamView.userInteractionEnabled = NO;
+    _desktopTrackpad.userInteractionEnabled = NO;
+    [_streamMan stopStream];
+    [_spinner stopAnimating];
+    [_statsUpdateTimer invalidate];
+    _statsUpdateTimer = nil;
+    [UIApplication sharedApplication].idleTimerDisabled = NO;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Desktop connection"
+                                                                    message:message preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Retry" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [self restartDesktopStream:@"Reconnecting"];
+    }]];
+    if (_adaptiveDesktop) {
+        [alert addAction:[UIAlertAction actionWithTitle:@"Retry at Settings resolution" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            self->_adaptiveDesktop = NO;
+            [self updateDesktopMenu];
+            [self restartDesktopStream:@"Reconnecting"];
+        }]];
+    }
+    [alert addAction:[UIAlertAction actionWithTitle:@"Disconnect" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+        [self returnToMainFrame];
+    }]];
+    if (!self.presentedViewController) { [self presentViewController:alert animated:YES completion:nil]; }
+}
+#endif
 
 - (void)rumble:(unsigned short)controllerNumber lowFreqMotor:(unsigned short)lowFreqMotor highFreqMotor:(unsigned short)highFreqMotor {
     Log(LOG_I, @"Rumble on gamepad %d: %04x %04x", controllerNumber, lowFreqMotor, highFreqMotor);
@@ -698,6 +1073,7 @@
     // Enable home bar hiding again if conditions allow
     _userIsInteracting = NO;
 #if !TARGET_OS_TV
+    [self scheduleDesktopResolutionUpdate];
     if (@available(iOS 11.0, *)) {
         [self setNeedsUpdateOfHomeIndicatorAutoHidden];
     }

@@ -14,6 +14,7 @@
 #import "RelativeTouchHandler.h"
 #import "AbsoluteTouchHandler.h"
 #import "KeyboardInputField.h"
+#import "DesktopGeometry.h"
 
 static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 
@@ -24,7 +25,9 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     BOOL isInputingText;
     NSMutableSet* keysDown;
     
-    float streamAspectRatio;
+    double streamAspectRatio;
+    BOOL fillVideo;
+    BOOL desktopMode;
     
     // iOS 13.4 mouse support
     NSInteger lastMouseButtonMask;
@@ -39,7 +42,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     
     UIResponder* touchHandler;
     
-    id<UserInteractionDelegate> interactionDelegate;
+    __weak id<UserInteractionDelegate> interactionDelegate;
     NSTimer* interactionTimer;
     BOOL hasUserInteracted;
     
@@ -50,7 +53,9 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
      interactionDelegate:(id<UserInteractionDelegate>)interactionDelegate
                   config:(StreamConfiguration*)streamConfig {
     self->interactionDelegate = interactionDelegate;
-    self->streamAspectRatio = (float)streamConfig.width / (float)streamConfig.height;
+    [self setStreamWidth:streamConfig.width height:streamConfig.height];
+    desktopMode = streamConfig.desktopMode;
+    self.clipsToBounds = YES;
     
     TemporarySettings* settings = [[[DataManager alloc] init] getSettings];
     
@@ -60,6 +65,8 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     [keyInputField setAutocorrectionType:UITextAutocorrectionTypeNo];
     [keyInputField setAutocapitalizationType:UITextAutocapitalizationTypeNone];
     [keyInputField setSpellCheckingType:UITextSpellCheckingTypeNo];
+    keyInputField.delegate = self;
+    [keyInputField addTarget:self action:@selector(onKeyboardPressed:) forControlEvents:UIControlEventEditingChanged];
     [self addSubview:keyInputField];
     
 #if TARGET_OS_TV
@@ -76,8 +83,8 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     
     onScreenControls = [[OnScreenControls alloc] initWithView:self controllerSup:controllerSupport streamConfig:streamConfig];
     OnScreenControlsLevel level = (OnScreenControlsLevel)[settings.onscreenControls integerValue];
-    if (settings.absoluteTouchMode) {
-        Log(LOG_I, @"On-screen controls disabled in absolute touch mode");
+    if (settings.absoluteTouchMode || desktopMode) {
+        Log(LOG_I, @"On-screen gamepad disabled for direct touch or Desktop");
         [onScreenControls setLevel:OnScreenControlsLevelOff];
     }
     else if (level == OnScreenControlsLevelAuto) {
@@ -176,50 +183,38 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     }
 }
 
-- (CGSize) getVideoAreaSize {
-    if (self.bounds.size.width > self.bounds.size.height * streamAspectRatio) {
-        return CGSizeMake(self.bounds.size.height * streamAspectRatio, self.bounds.size.height);
-    } else {
-        return CGSizeMake(self.bounds.size.width, self.bounds.size.width / streamAspectRatio);
-    }
+- (void)setStreamWidth:(int)width height:(int)height {
+    streamAspectRatio = width > 0 && height > 0 ? (double)width / height : 16.0 / 9;
+    lastMouseX = lastMouseY = -1;
 }
 
-- (CGPoint) adjustCoordinatesForVideoArea:(CGPoint)point {
-    // These are now relative to the StreamView, however we need to scale them
-    // further to make them relative to the actual video portion.
-    float x = point.x - self.bounds.origin.x;
-    float y = point.y - self.bounds.origin.y;
-    
-    // For some reason, we don't seem to always get to the bounds of the window
-    // so we'll subtract 1 pixel if we're to the left/below of the origin and
-    // and add 1 pixel if we're to the right/above. It should be imperceptible
-    // to the user but it will allow activation of gestures that require contact
-    // with the edge of the screen (like Aero Snap).
-    if (x < self.bounds.size.width / 2) {
-        x--;
-    }
-    else {
-        x++;
-    }
-    if (y < self.bounds.size.height / 2) {
-        y--;
-    }
-    else {
-        y++;
-    }
-    
-    // This logic mimics what iOS does with AVLayerVideoGravityResizeAspect
-    CGSize videoSize = [self getVideoAreaSize];
-    CGPoint videoOrigin = CGPointMake(self.bounds.size.width / 2 - videoSize.width / 2,
-                                      self.bounds.size.height / 2 - videoSize.height / 2);
-    
-    // Confine the cursor to the video region. We don't just discard events outside
-    // the region because we won't always get one exactly when the mouse leaves the region.
-    return CGPointMake(MIN(MAX(x, videoOrigin.x), videoOrigin.x + videoSize.width) - videoOrigin.x,
-                       MIN(MAX(y, videoOrigin.y), videoOrigin.y + videoSize.height) - videoOrigin.y);
+- (CGRect)videoContentRect {
+    CGRect bounds = self.bounds;
+    DesktopRect video = DesktopVideoRect(
+        (DesktopRect){bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height},
+        streamAspectRatio, fillVideo);
+    return CGRectMake(video.x, video.y, video.width, video.height);
 }
 
 #if !TARGET_OS_TV
+
+- (CGPoint)normalizedVideoPoint:(CGPoint)point {
+    CGRect rect = [self videoContentRect];
+    DesktopRect video = {rect.origin.x, rect.origin.y, rect.size.width, rect.size.height};
+    DesktopPoint location = DesktopMapPoint(video, point.x, point.y);
+    return CGPointMake(location.x, location.y);
+}
+
+- (void)setFillVideo:(BOOL)fill {
+    fillVideo = fill;
+    lastMouseX = lastMouseY = -1;
+}
+
+- (void)setDirectTouch:(BOOL)direct {
+    [(id)touchHandler cancelTouches];
+    touchHandler = direct ? [[AbsoluteTouchHandler alloc] initWithView:self] :
+                            [[RelativeTouchHandler alloc] initWithView:self];
+}
 
 - (uint16_t)getRotationFromAzimuthAngle:(float)azimuthAngle {
     // iOS reports azimuth of 0 when the stylus is pointing west, but Moonlight expects
@@ -266,10 +261,8 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
             return YES;
     }
 
-    CGPoint location = [self adjustCoordinatesForVideoArea:[event locationInView:self]];
-    CGSize videoSize = [self getVideoAreaSize];
-    
-    return LiSendPenEvent(type, LI_TOOL_TYPE_PEN, 0, location.x / videoSize.width, location.y / videoSize.height,
+    CGPoint location = [self normalizedVideoPoint:[event locationInView:self]];
+    return LiSendPenEvent(type, LI_TOOL_TYPE_PEN, 0, location.x, location.y,
                           (event.force / event.maximumPossibleForce) / sin(event.altitudeAngle),
                           0.0f, 0.0f,
                           [self getRotationFromAzimuthAngle:[event azimuthAngleInView:self]],
@@ -293,8 +286,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
             return;
     }
 
-    CGPoint location = [self adjustCoordinatesForVideoArea:[gesture locationInView:self]];
-    CGSize videoSize = [self getVideoAreaSize];
+    CGPoint location = [self normalizedVideoPoint:[gesture locationInView:self]];
     
     float distance = 0.0f;
 #if defined(__IPHONE_16_1) || defined(__TVOS_16_1)
@@ -312,7 +304,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     }
 #endif
     
-    LiSendPenEvent(type, LI_TOOL_TYPE_PEN, 0, location.x / videoSize.width, location.y / videoSize.height,
+    LiSendPenEvent(type, LI_TOOL_TYPE_PEN, 0, location.x, location.y,
                    distance, 0.0f, 0.0f, rotationAngle, tiltAngle);
 }
 
@@ -352,42 +344,40 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
         [touchHandler touchesBegan:touches withEvent:event];
         
         if ([[event allTouches] count] == 3) {
-            if (isInputingText) {
-                Log(LOG_D, @"Closing the keyboard");
-                [keyInputField resignFirstResponder];
-                isInputingText = false;
-            } else {
-                Log(LOG_D, @"Opening the keyboard");
-                // Prepare the textbox used to capture keyboard events.
-                keyInputField.delegate = self;
-                keyInputField.text = @"0";
-#if !TARGET_OS_TV
-                // Prepare the toolbar above the keyboard for more options
-                UIToolbar *customToolbarView = [[UIToolbar alloc] initWithFrame:CGRectMake(0, 0, self.bounds.size.width, 44)];
-                
-                UIBarButtonItem *doneBarButton = [self createButtonWithImageNamed:@"DoneIcon.png" backgroundColor:[UIColor clearColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x00 isToggleable:NO];
-                UIBarButtonItem *windowsBarButton = [self createButtonWithImageNamed:@"WindowsIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x5B isToggleable:YES];
-                UIBarButtonItem *tabBarButton = [self createButtonWithImageNamed:@"TabIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x09 isToggleable:NO];
-                UIBarButtonItem *shiftBarButton = [self createButtonWithImageNamed:@"ShiftIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0xA0 isToggleable:YES];
-                UIBarButtonItem *escapeBarButton = [self createButtonWithImageNamed:@"EscapeIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x1B isToggleable:NO];
-                UIBarButtonItem *controlBarButton = [self createButtonWithImageNamed:@"ControlIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0xA2 isToggleable:YES];
-                UIBarButtonItem *altBarButton = [self createButtonWithImageNamed:@"AltIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0xA4 isToggleable:YES];
-                UIBarButtonItem *deleteBarButton = [self createButtonWithImageNamed:@"DeleteIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x2E isToggleable:NO];
-                UIBarButtonItem *flexibleSpace = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
-                
-                [customToolbarView setItems:[NSArray arrayWithObjects:doneBarButton, windowsBarButton, escapeBarButton, tabBarButton, shiftBarButton, controlBarButton, altBarButton, deleteBarButton, flexibleSpace, nil]];
-                keyInputField.inputAccessoryView = customToolbarView;
-#endif
-                [keyInputField becomeFirstResponder];
-                [keyInputField addTarget:self action:@selector(onKeyboardPressed:) forControlEvents:UIControlEventEditingChanged];
-                
-                // Undo causes issues for our state management, so turn it off
-                [keyInputField.undoManager disableUndoRegistration];
-                
-                isInputingText = true;
-            }
+            [self toggleSoftwareKeyboard];
         }
     }
+}
+
+- (void)toggleSoftwareKeyboard {
+    if (isInputingText) {
+        [keyInputField resignFirstResponder];
+        [self becomeFirstResponder];
+        return;
+    }
+
+    keyInputField.text = @"0";
+#if !TARGET_OS_TV
+    if (!desktopMode && !keyInputField.inputAccessoryView) {
+        // Prepare the toolbar above the keyboard for more options
+        UIToolbar *customToolbarView = [[UIToolbar alloc] initWithFrame:CGRectMake(0, 0, self.bounds.size.width, 44)];
+
+        UIBarButtonItem *doneBarButton = [self createButtonWithImageNamed:@"DoneIcon.png" backgroundColor:[UIColor clearColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x00 isToggleable:NO];
+        UIBarButtonItem *windowsBarButton = [self createButtonWithImageNamed:@"WindowsIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x5B isToggleable:YES];
+        UIBarButtonItem *tabBarButton = [self createButtonWithImageNamed:@"TabIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x09 isToggleable:NO];
+        UIBarButtonItem *shiftBarButton = [self createButtonWithImageNamed:@"ShiftIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0xA0 isToggleable:YES];
+        UIBarButtonItem *escapeBarButton = [self createButtonWithImageNamed:@"EscapeIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x1B isToggleable:NO];
+        UIBarButtonItem *controlBarButton = [self createButtonWithImageNamed:@"ControlIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0xA2 isToggleable:YES];
+        UIBarButtonItem *altBarButton = [self createButtonWithImageNamed:@"AltIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0xA4 isToggleable:YES];
+        UIBarButtonItem *deleteBarButton = [self createButtonWithImageNamed:@"DeleteIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x2E isToggleable:NO];
+        UIBarButtonItem *flexibleSpace = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
+
+        [customToolbarView setItems:[NSArray arrayWithObjects:doneBarButton, windowsBarButton, escapeBarButton, tabBarButton, shiftBarButton, controlBarButton, altBarButton, deleteBarButton, flexibleSpace, nil]];
+        keyInputField.inputAccessoryView = customToolbarView;
+    }
+#endif
+    isInputingText = [keyInputField becomeFirstResponder];
+    [keyInputField.undoManager disableUndoRegistration];
 }
 
 - (UIBarButtonItem *)createButtonWithImageNamed:(NSString *)imageName backgroundColor:(UIColor *)backgroundColor target:(id)target action:(SEL)action keyCode:(NSInteger)keyCode isToggleable:(BOOL)isToggleable {
@@ -632,24 +622,18 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 
 #if !TARGET_OS_TV
 - (void) updateCursorLocation:(CGPoint)location isMouse:(BOOL)isMouse {
-    CGPoint normalizedLocation = [self adjustCoordinatesForVideoArea:location];
-    CGSize videoSize = [self getVideoAreaSize];
-    
-    // Send the mouse position relative to the video region if it has changed
-    // if we're receiving coordinates from a real mouse.
-    //
-    // NB: It is important for functionality (not just optimization) to only
-    // send it if the value has changed. We will receive one of these events
-    // any time the user presses a modifier key, which can result in errant
-    // mouse motion when using a Citrix X1 mouse.
-    if (normalizedLocation.x != lastMouseX || normalizedLocation.y != lastMouseY || !isMouse) {
-        if (lastMouseX != 0 || lastMouseY != 0 || !isMouse) {
-            LiSendMousePositionEvent(normalizedLocation.x, normalizedLocation.y, videoSize.width, videoSize.height);
-        }
-        
+    if (CGRectIsEmpty([self videoContentRect])) {
+        return;
+    }
+    CGPoint normalizedLocation = [self normalizedVideoPoint:location];
+    const short reference = 10000;
+    short x = (short)lround(normalizedLocation.x * reference);
+    short y = (short)lround(normalizedLocation.y * reference);
+    if (!isMouse || x != lastMouseX || y != lastMouseY) {
+        LiSendMousePositionEvent(x, y, reference, reference);
         if (isMouse) {
-            lastMouseX = normalizedLocation.x;
-            lastMouseY = normalizedLocation.y;
+            lastMouseX = x;
+            lastMouseY = y;
         }
     }
 }
@@ -664,25 +648,11 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
         }
     }
     
-    // This logic mimics what iOS does with AVLayerVideoGravityResizeAspect
-    CGSize videoSize;
-    CGPoint videoOrigin;
-    if (self.bounds.size.width > self.bounds.size.height * streamAspectRatio) {
-        videoSize = CGSizeMake(self.bounds.size.height * streamAspectRatio, self.bounds.size.height);
-    } else {
-        videoSize = CGSizeMake(self.bounds.size.width, self.bounds.size.width / streamAspectRatio);
-    }
-    videoOrigin = CGPointMake(self.bounds.size.width / 2 - videoSize.width / 2,
-                              self.bounds.size.height / 2 - videoSize.height / 2);
-    
-    // Move the cursor on the host if no buttons are pressed.
-    // Motion with buttons pressed in handled in touchesMoved:
     if (lastMouseButtonMask == 0) {
         [self updateCursorLocation:request.location isMouse:YES];
     }
-    
-    // The pointer interaction should cover the video region only
-    return [UIPointerRegion regionWithRect:CGRectMake(videoOrigin.x, videoOrigin.y, videoSize.width, videoSize.height) identifier:nil];
+    CGRect region = CGRectIntersection([self videoContentRect], self.bounds);
+    return CGRectIsEmpty(region) ? nil : [UIPointerRegion regionWithRect:region identifier:nil];
 }
 
 - (UIPointerStyle *)pointerInteraction:(UIPointerInteraction *)interaction styleForRegion:(UIPointerRegion *)region  API_AVAILABLE(ios(13.4)) {
@@ -772,6 +742,12 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 }
 
 - (BOOL)textFieldShouldReturn:(UITextField *)textField {
+#if !TARGET_OS_TV
+    if (desktopMode) {
+        [self sendDesktopShortcut:@[@(0x0d)]];
+        return NO;
+    }
+#endif
     // This method is called when the "Return" key is pressed.
     LiSendKeyboardEvent(0x0d, KEY_ACTION_DOWN, 0);
     usleep(50 * 1000);
@@ -780,14 +756,86 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 }
 
 - (void)textFieldDidEndEditing:(UITextField *)textField {
+    isInputingText = NO;
+    [self releaseHeldModifiers];
+}
+
+- (void)releaseHeldModifiers {
     for (NSNumber* keyCode in keysDown) {
         LiSendKeyboardEvent([keyCode shortValue], KEY_ACTION_UP, 0);
     }
     [keysDown removeAllObjects];
 }
 
+#if !TARGET_OS_TV
+- (BOOL)isDesktopModifierHeld:(short)keyCode {
+    return [keysDown containsObject:@(keyCode)];
+}
+
+- (BOOL)toggleDesktopModifier:(short)keyCode {
+    BOOL held = [self isDesktopModifierHeld:keyCode];
+    LiSendKeyboardEvent(keyCode, held ? KEY_ACTION_UP : KEY_ACTION_DOWN, 0);
+    if (held) {
+        [keysDown removeObject:@(keyCode)];
+    } else {
+        [keysDown addObject:@(keyCode)];
+    }
+    return !held;
+}
+
+- (void)sendDesktopShortcut:(NSArray<NSNumber *> *)keys {
+    NSMutableArray<NSNumber *> *pressed = [NSMutableArray array];
+    for (NSNumber *key in keys) {
+        if (![keysDown containsObject:key]) {
+            LiSendKeyboardEvent(key.shortValue, KEY_ACTION_DOWN, 0);
+            [pressed addObject:key];
+        }
+    }
+    for (NSNumber *key in pressed.reverseObjectEnumerator) {
+        LiSendKeyboardEvent(key.shortValue, KEY_ACTION_UP, 0);
+    }
+}
+
+- (void)releaseDesktopInput {
+    [(id)touchHandler cancelTouches];
+    [self releaseHeldModifiers];
+    [keyInputField resignFirstResponder];
+    [interactionTimer invalidate];
+    interactionTimer = nil;
+}
+#endif
+
 - (void)onKeyboardPressed:(UITextField *)textField {
+    if (textField.markedTextRange != nil) {
+        return;
+    }
     NSString* inputText = textField.text;
+#if !TARGET_OS_TV
+    if (desktopMode) {
+        if (inputText.length == 0) {
+            [self sendDesktopShortcut:@[@(0x08)]];
+        } else if (inputText.length > 1) {
+            NSString *text = [inputText substringFromIndex:1];
+            // Plain text preserves the keyboard's layout and composed Unicode.
+            // Modifier chords need virtual keys so Windows can act on them.
+            if (keysDown.count == 0) {
+                NSData *utf8 = [text dataUsingEncoding:NSUTF8StringEncoding];
+                LiSendUtf8TextEvent(utf8.bytes, (int)utf8.length);
+            } else {
+                for (NSUInteger i = 0; i < text.length; i++) {
+                    struct KeyEvent key = [KeyboardSupport translateKeyEvent:[text characterAtIndex:i] withModifierFlags:0];
+                    if (key.keycode != 0) {
+                        [self sendDesktopShortcut:key.modifierKeycode && key.modifier ?
+                            @[@(key.modifierKeycode), @(key.keycode)] : @[@(key.keycode)]];
+                    }
+                }
+            }
+        }
+        textField.text = @"0";
+        textField.selectedTextRange = [textField textRangeFromPosition:textField.endOfDocument toPosition:textField.endOfDocument];
+        return;
+    }
+#endif
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
         // If the text became empty, we know the user pressed the backspace key.
         if ([inputText isEqual:@""]) {
