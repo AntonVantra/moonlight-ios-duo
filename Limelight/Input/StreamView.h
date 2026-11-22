@@ -35,6 +35,8 @@
 #if !TARGET_OS_TV
 - (void) updateCursorLocation:(CGPoint)location isMouse:(BOOL)isMouse;
 - (void)setFillVideo:(BOOL)fill;
+- (void)setCaptureAspect:(double)aspect;
+- (CGRect)visibleDesktopRect;
 - (void)setDirectTouch:(BOOL)direct;
 - (void)toggleSoftwareKeyboard;
 - (BOOL)toggleDesktopModifier:(short)keyCode;

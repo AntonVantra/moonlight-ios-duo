@@ -108,6 +108,7 @@ static CGRect DesktopCGRect(DesktopRect rect) {
     DesktopLayout _desktopLayout;
     BOOL _desktopDirectTouch;
     BOOL _desktopFill;
+    NSInteger _desktopCaptureChoice;
     BOOL _adaptiveDesktop;
     BOOL _desktopReady;
     BOOL _restartingDesktop;
@@ -507,6 +508,22 @@ static CGRect DesktopCGRect(DesktopRect rect) {
         }]];
     }
 
+    NSMutableArray<UIAction *> *capture = [NSMutableArray array];
+    NSArray<NSString *> *captureNames = @[@"Match encoded video", @"Standard (16:9)", @"Ultrawide (3440 × 1440)"];
+    NSArray<NSNumber *> *captureAspects = @[@0, @(16.0 / 9), @(3440.0 / 1440)];
+    for (NSInteger i = 0; i < (NSInteger)captureNames.count; i++) {
+        UIAction *choice = [UIAction actionWithTitle:captureNames[i] image:nil identifier:nil handler:^(UIAction *action) {
+            StreamFrameViewController *controller = weakSelf;
+            if (!controller) { return; }
+            controller->_desktopCaptureChoice = i;
+            [controller->_streamView setCaptureAspect:captureAspects[i].doubleValue];
+            [controller->_streamMan updateRendererLayout];
+            [controller updateDesktopMenu];
+        }];
+        choice.state = _desktopCaptureChoice == i ? UIMenuElementStateOn : UIMenuElementStateOff;
+        [capture addObject:choice];
+    }
+
     UIAction *touch = [UIAction actionWithTitle:_desktopDirectTouch ? @"Switch to trackpad" : @"Switch to direct touch"
                                         image:nil identifier:nil handler:^(UIAction *action) {
         StreamFrameViewController *controller = weakSelf;
@@ -539,6 +556,7 @@ static CGRect DesktopCGRect(DesktopRect rect) {
 
     _desktopMenuButton.menu = [UIMenu menuWithChildren:@[
         [UIMenu menuWithTitle:@"Layout" children:layouts], touch, fit, resolution,
+        [UIMenu menuWithTitle:@"Host display shape" children:capture],
         [UIMenu menuWithTitle:@"Hold modifiers" children:modifiers],
         [UIMenu menuWithTitle:@"Windows shortcuts" children:shortcuts], disconnect
     ]];

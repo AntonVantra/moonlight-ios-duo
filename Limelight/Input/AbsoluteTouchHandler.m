@@ -69,7 +69,7 @@
     }
     UITouch *touch = touches.anyObject;
     CGPoint point = [touch locationInView:_view];
-    if (!CGRectContainsPoint([_view videoContentRect], point)) {
+    if (!CGRectContainsPoint([_view visibleDesktopRect], point)) {
         return;
     }
     _primaryTouch = touch;

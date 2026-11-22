@@ -29,6 +29,19 @@ static inline DesktopRect DesktopVideoRect(DesktopRect viewport, double aspect, 
     };
 }
 
+// Sunshine centers a differently shaped desktop inside the encoded frame.
+static inline DesktopRect DesktopEncodedFrame(DesktopRect viewport, double encodedAspect,
+                                              double captureAspect, bool fill) {
+    if (captureAspect <= 0 || !isfinite(captureAspect) || encodedAspect <= 0 || !isfinite(encodedAspect)) {
+        return DesktopVideoRect(viewport, encodedAspect, fill);
+    }
+    DesktopRect source = DesktopVideoRect((DesktopRect){0, 0, encodedAspect, 1}, captureAspect, false);
+    DesktopRect target = DesktopVideoRect(viewport, captureAspect, fill);
+    double scale = target.width / source.width;
+    return (DesktopRect){target.x - source.x * scale, target.y - source.y * scale,
+                         encodedAspect * scale, scale};
+}
+
 static inline DesktopPoint DesktopMapPoint(DesktopRect video, double x, double y) {
     if (!DesktopRectIsUsable(video) || !isfinite(x) || !isfinite(y)) {
         return (DesktopPoint){0};

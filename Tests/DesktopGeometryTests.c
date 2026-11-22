@@ -43,6 +43,19 @@ int main(void) {
     near(0.25, DesktopMapPoint((DesktopRect){20, 100, 400, 300}, 120, 250).x);
     near(0.5, DesktopMapPoint((DesktopRect){20, 100, 400, 300}, 120, 250).y);
 
+    assert(DesktopResolutionChanged(2670, 1878, (DesktopPixels){2034, 1398}));
+    assert(DesktopResolutionChanged(2670, 1878, (DesktopPixels){1878, 2670}));
+    assert(!DesktopResolutionChanged(2670, 1878, (DesktopPixels){2600, 1830}));
+    assert(!DesktopResolutionChanged(2670, 1878, (DesktopPixels){0, 0}));
+
+    // A 16:9 desktop inside a taller encoded video frame must map through the
+    // host's letterbox. In Fill, the visible edges land within the source frame.
+    DesktopRect encoded = DesktopEncodedFrame(inner, 2670.0 / 1878, 16.0 / 9, true);
+    near(0.5, DesktopMapPoint(encoded, 445, 313).x);
+    near(0.5, DesktopMapPoint(encoded, 445, 313).y);
+    assert(encoded.width > inner.width && encoded.height > inner.height);
+    assert(DesktopMapPoint(encoded, 0, 0).y > 0);
+
     DesktopPanes panes = DesktopLaptopPanes(inner, (DesktopRect){0, 305, 890, 16}, true);
     near(305, panes.video.height);
     near(321, panes.trackpad.y);

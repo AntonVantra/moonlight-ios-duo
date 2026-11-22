@@ -9,6 +9,7 @@
 #import "SettingsViewController.h"
 #import "TemporarySettings.h"
 #import "DataManager.h"
+#import "AppDelegate.h"
 
 #import <VideoToolbox/VideoToolbox.h>
 #import <AVFoundation/AVFoundation.h>
@@ -16,6 +17,7 @@
 @implementation SettingsViewController {
     NSInteger _bitrate;
     NSInteger _lastSelectedResolutionIndex;
+    CGFloat _safeAreaPadding;
 }
 
 @dynamic overrideUserInterfaceStyle;
@@ -70,6 +72,12 @@ CGSize resolutionTable[RESOLUTION_TABLE_SIZE];
 // This view is rooted at a ScrollView. To make it scrollable,
 // we'll update content size here.
 -(void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    [self updateNativeResolutionModes];
+    if (self.resolutionSelector.selectedSegmentIndex == 4 || self.resolutionSelector.selectedSegmentIndex == 5) {
+        [self updateResolutionDisplayViewText];
+    }
+
     CGFloat highestViewY = 0;
     
     // Enumerate the scroll view's subviews looking for the
@@ -100,16 +108,31 @@ CGSize resolutionTable[RESOLUTION_TABLE_SIZE];
 - (void)viewSafeAreaInsetsDidChange {
     [super viewSafeAreaInsetsDidChange];
     
-    if (@available(iOS 11.0, *)) {
-        for (UIView* view in self.view.subviews) {
-            // HACK: The official safe area is much too large for our purposes
-            // so we'll just use the presence of any safe area to indicate we should
-            // pad by 20.
-            if (self.view.safeAreaInsets.left >= 20 || self.view.safeAreaInsets.right >= 20) {
-                view.frame = CGRectMake(view.frame.origin.x + 20, view.frame.origin.y, view.frame.size.width, view.frame.size.height);
-            }
+    CGFloat padding = self.view.safeAreaInsets.left >= 20 || self.view.safeAreaInsets.right >= 20 ? 20 : 0;
+    if (_safeAreaPadding != padding) {
+        for (UIView *view in self.view.subviews) {
+            view.frame = CGRectOffset(view.frame, padding - _safeAreaPadding, 0);
         }
+        _safeAreaPadding = padding;
     }
+}
+
+- (UIWindow *)activeWindow {
+    return self.view.window ?: ((AppDelegate *)UIApplication.sharedApplication.delegate).window;
+}
+
+- (void)updateNativeResolutionModes {
+    UIWindow *window = [self activeWindow];
+    CGFloat scale = window.windowScene.screen.nativeScale;
+    if (!window || scale <= 0) {
+        resolutionTable[4] = resolutionTable[5] = resolutionTable[2];
+        return;
+    }
+    CGRect safe = UIEdgeInsetsInsetRect(window.bounds, window.safeAreaInsets);
+    resolutionTable[4] = CGSizeMake(floor(safe.size.width * scale / 2) * 2,
+                                    floor(safe.size.height * scale / 2) * 2);
+    resolutionTable[5] = CGSizeMake(floor(window.bounds.size.width * scale / 2) * 2,
+                                    floor(window.bounds.size.height * scale / 2) * 2);
 }
 
 BOOL isCustomResolution(CGSize res) {
@@ -140,13 +163,6 @@ BOOL isCustomResolution(CGSize res) {
     // Ensure we pick a bitrate that falls exactly onto a slider notch
     _bitrate = bitrateTable[[self getSliderValueForBitrate:[currentSettings.bitrate intValue]]];
 
-    // Get the size of the screen with and without safe area insets
-    UIWindow *window = UIApplication.sharedApplication.windows.firstObject;
-    CGFloat screenScale = window.screen.scale;
-    CGFloat safeAreaWidth = (window.frame.size.width - window.safeAreaInsets.left - window.safeAreaInsets.right) * screenScale;
-    CGFloat fullScreenWidth = window.frame.size.width * screenScale;
-    CGFloat fullScreenHeight = window.frame.size.height * screenScale;
-    
     self.resolutionDisplayView.layer.cornerRadius = 10;
     self.resolutionDisplayView.clipsToBounds = YES;
     UITapGestureRecognizer *resolutionDisplayViewTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(resolutionDisplayViewTapped:)];
@@ -156,8 +172,7 @@ BOOL isCustomResolution(CGSize res) {
     resolutionTable[1] = CGSizeMake(1280, 720);
     resolutionTable[2] = CGSizeMake(1920, 1080);
     resolutionTable[3] = CGSizeMake(3840, 2160);
-    resolutionTable[4] = CGSizeMake(safeAreaWidth, fullScreenHeight);
-    resolutionTable[5] = CGSizeMake(fullScreenWidth, fullScreenHeight);
+    [self updateNativeResolutionModes];
     resolutionTable[6] = CGSizeMake([currentSettings.width integerValue], [currentSettings.height integerValue]); // custom initial value
     
     // Don't populate the custom entry unless we have a custom resolution
@@ -191,7 +206,7 @@ BOOL isCustomResolution(CGSize res) {
     // Only show the 120 FPS option if we have a > 60-ish Hz display
     bool enable120Fps = false;
     if (@available(iOS 10.3, tvOS 10.3, *)) {
-        if ([UIScreen mainScreen].maximumFramesPerSecond > 62) {
+        if ([self activeWindow].windowScene.screen.maximumFramesPerSecond > 62) {
             enable120Fps = true;
         }
     }

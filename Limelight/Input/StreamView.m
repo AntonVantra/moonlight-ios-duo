@@ -26,6 +26,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     NSMutableSet* keysDown;
     
     double streamAspectRatio;
+    double captureAspect;
     BOOL fillVideo;
     BOOL desktopMode;
     
@@ -190,9 +191,9 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 
 - (CGRect)videoContentRect {
     CGRect bounds = self.bounds;
-    DesktopRect video = DesktopVideoRect(
+    DesktopRect video = DesktopEncodedFrame(
         (DesktopRect){bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height},
-        streamAspectRatio, fillVideo);
+        streamAspectRatio, captureAspect, fillVideo);
     return CGRectMake(video.x, video.y, video.width, video.height);
 }
 
@@ -208,6 +209,19 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 - (void)setFillVideo:(BOOL)fill {
     fillVideo = fill;
     lastMouseX = lastMouseY = -1;
+}
+
+- (void)setCaptureAspect:(double)aspect {
+    captureAspect = aspect;
+    lastMouseX = lastMouseY = -1;
+}
+
+- (CGRect)visibleDesktopRect {
+    CGRect bounds = self.bounds;
+    DesktopRect rect = DesktopVideoRect(
+        (DesktopRect){bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height},
+        captureAspect > 0 ? captureAspect : streamAspectRatio, fillVideo);
+    return CGRectIntersection(bounds, CGRectMake(rect.x, rect.y, rect.width, rect.height));
 }
 
 - (void)setDirectTouch:(BOOL)direct {
@@ -651,7 +665,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     if (lastMouseButtonMask == 0) {
         [self updateCursorLocation:request.location isMouse:YES];
     }
-    CGRect region = CGRectIntersection([self videoContentRect], self.bounds);
+    CGRect region = [self visibleDesktopRect];
     return CGRectIsEmpty(region) ? nil : [UIPointerRegion regionWithRect:region identifier:nil];
 }
 
