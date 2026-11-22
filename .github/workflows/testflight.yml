@@ -1,0 +1,49 @@
+name: Moonlight Duo TestFlight
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Check the Xcode archive or sign and upload an internal build
+        type: choice
+        options: [preflight, upload]
+        default: preflight
+
+permissions:
+  contents: read
+
+concurrency:
+  group: moonlight-duo-testflight
+  cancel-in-progress: false
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+
+jobs:
+  preflight:
+    if: github.repository == 'AntonVantra/moonlight-ios-duo' && github.ref == 'refs/heads/duo-desktop' && inputs.mode == 'preflight'
+    runs-on: xcode-27
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Check available Apple signing and upload tooling
+        run: |
+          xcodebuild -version
+          xcodebuild -help > "$RUNNER_TEMP/xcodebuild-help.txt" 2>&1
+          grep -A 4 'testFlightInternalTestingOnly' "$RUNNER_TEMP/xcodebuild-help.txt"
+          xcrun altool --help > "$RUNNER_TEMP/altool-help.txt" 2>&1 || true
+          grep -Ei -A 3 'apiissuer|apikey|individual|jwt' "$RUNNER_TEMP/altool-help.txt" || true
+
+      - name: Verify the unsigned Xcode archive
+        run: |
+          archive="$RUNNER_TEMP/MoonlightDuo.xcarchive"
+          xcodebuild -project Moonlight.xcodeproj -scheme Moonlight \
+            -configuration Release -destination 'generic/platform=iOS' -archivePath "$archive" \
+            -onlyUsePackageVersionsFromResolvedFile CODE_SIGNING_ALLOWED=NO archive
+          app="$archive/Products/Applications/Moonlight.app"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist" | grep -Fx com.antonvantra.moonlight.duo
+          test -f "$app/Moonlight"
