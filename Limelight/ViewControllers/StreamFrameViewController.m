@@ -493,17 +493,31 @@ static CGRect DesktopCGRect(DesktopRect rect) {
         @"Alt+Tab": @[@0xa4, @0x09], @"Copy": @[@0xa2, @0x43], @"Paste": @[@0xa2, @0x56],
         @"Select all": @[@0xa2, @0x41], @"Show desktop": @[@0x5b, @0x44],
         @"File Explorer": @[@0x5b, @0x45], @"Task Manager": @[@0xa2, @0xa0, @0x1b],
+        @"Move window left": @[@0x5b, @0xa0, @0x25], @"Move window right": @[@0x5b, @0xa0, @0x27],
         @"Escape": @[@0x1b], @"Tab": @[@0x09], @"Delete": @[@0x2e],
         @"Left": @[@0x25], @"Up": @[@0x26], @"Right": @[@0x27], @"Down": @[@0x28]
     };
     NSMutableArray<UIAction *> *shortcuts = [NSMutableArray array];
     for (NSString *title in @[@"Alt+Tab", @"Copy", @"Paste", @"Select all", @"Show desktop", @"File Explorer",
-                               @"Task Manager", @"Escape", @"Tab", @"Delete", @"Left", @"Up", @"Right", @"Down"]) {
+                               @"Task Manager", @"Move window left", @"Move window right",
+                               @"Escape", @"Tab", @"Delete", @"Left", @"Up", @"Right", @"Down"]) {
         NSArray<NSNumber *> *chord = shortcutKeys[title];
         [shortcuts addObject:[UIAction actionWithTitle:title image:nil identifier:nil handler:^(UIAction *action) {
             StreamFrameViewController *controller = weakSelf;
             if (controller && controller->_desktopReady) {
                 [controller->_streamView sendDesktopShortcut:chord];
+            }
+        }]];
+    }
+
+    NSMutableArray<UIAction *> *monitors = [NSMutableArray array];
+    for (NSInteger index = 0; index < 2; index++) {
+        NSString *title = [NSString stringWithFormat:@"Monitor %ld", (long)index + 1];
+        [monitors addObject:[UIAction actionWithTitle:title image:nil identifier:nil handler:^(UIAction *action) {
+            StreamFrameViewController *controller = weakSelf;
+            if (controller && controller->_desktopReady) {
+                // Sunshine switches the active capture output on Ctrl+Alt+Shift+Fn.
+                [controller->_streamView sendDesktopShortcut:@[@0xa2, @0xa4, @0xa0, @(0x70 + index)]];
             }
         }]];
     }
@@ -557,6 +571,7 @@ static CGRect DesktopCGRect(DesktopRect rect) {
     _desktopMenuButton.menu = [UIMenu menuWithChildren:@[
         [UIMenu menuWithTitle:@"Layout" children:layouts], touch, fit, resolution,
         [UIMenu menuWithTitle:@"Host display shape" children:capture],
+        [UIMenu menuWithTitle:@"Switch monitor" children:monitors],
         [UIMenu menuWithTitle:@"Hold modifiers" children:modifiers],
         [UIMenu menuWithTitle:@"Windows shortcuts" children:shortcuts], disconnect
     ]];

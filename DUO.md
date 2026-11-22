@@ -13,6 +13,7 @@ This fork keeps Moonlight's history and GPLv3 license. The scene-lifecycle and l
 - Tap once or twice in trackpad mode for a click or double-click. Tap with two fingers for a right-click. Hold one finger briefly and move it to drag. Move two fingers to scroll.
 - In direct touch mode, tap the Windows object, hold for right-click, or move your finger from the object to drag. Move two fingers to scroll. Pinch to zoom, then drag with two fingers to pan the zoomed view.
 - Tap the keyboard icon to type. The desktop menu contains Ctrl, Alt, Shift, Windows, and shortcuts such as Copy, Paste, File Explorer and Task Manager. An external mouse and keyboard use Moonlight's existing input support.
+- Use **Switch monitor** to change which display Sunshine streams, or **Windows shortcuts → Move window left/right** to move the focused app between displays. With a physical keyboard in official Moonlight, request the first or second output with Ctrl+Alt+Shift+F1 or F2.
 - Use **Layout → Automatic**, **Full screen** or **Laptop**. Automatic laptop mode uses Apple's public hinge and reserved-region APIs when the hinge divides the window horizontally. Manual laptop mode also works with no hinge information and uses the lower pane as the trackpad.
 - Desktop reflows as the window changes. In matching-resolution mode, a substantial settled size change reconnects to request the new resolution. Sunshine resumes the Windows desktop session. The stream can briefly pause during the switch. **Use resolution from Settings** keeps the same requested resolution throughout.
 - **Fit entire desktop** keeps every edge visible. **Fill screen (crop edges)** uses the whole viewport. If Sunshine is encoding an ultrawide or 16:9 display with padding, set **Host display shape** to the capture display's aspect ratio. A host display mode that matches the active phone viewport lets you fit the entire desktop and fill the screen at the same time.
@@ -24,6 +25,8 @@ The host installer expects the verified Sunshine AMD64 lite archive and Tailscal
 Run the script in administrator PowerShell. Complete the first-time Sunshine login on localhost and sign in to Tailscale. The script restricts Sunshine's listening address to the PC's Tailscale address after both steps, keeps UPnP off and requires encrypted Moonlight sessions. The Sunshine Web UI then uses the same Tailscale address on port 47990 and requires its own login.
 
 Sunshine captures one Windows display. The PC must be awake and Windows must still see the capture display. Hardware encoding is NVIDIA NVENC. The script uses DirectX capture, does not install a virtual monitor, and leaves Windows' physical display modes in place.
+
+Sunshine's **Configuration → Audio/Video → Display Id** sets the default captured monitor. Use the device ID from the startup log. The [display matching helper](Setup/Windows/Set-DisplayMatching.ps1) also accepts a display ID and can enable automatic matching of supported modes during a session. Its disable switch keeps the selected monitor at its normal resolution.
 
 ## Build and install
 
