@@ -8,7 +8,7 @@ This fork keeps Moonlight's history and GPLv3 license. The scene-lifecycle and l
 2. Add that address in Moonlight manually. Enter the four-digit PIN in the Sunshine Web UI on the PC, then select **Desktop** on the phone. The same address works at home and over cellular.
 3. Start with 1080p, 60 FPS and 15–20 Mbps. Raise bitrate on a good connection, or drop to 720p and 10 Mbps for a weaker link. The custom app's Desktop stream can use automatic resolution or the resolution set in Moonlight Settings.
 
-In official Moonlight, set **On-Screen Controls** to **Off** for desktop use. With **Direct Touch** selected, tap where you want to click, pinch the picture to zoom, and drag with two fingers to pan while zoomed. Tap with three fingers at once to open or hide the Windows typing keyboard.
+In official Moonlight, set **On-Screen Controls** to **Off** for desktop use. With **Touch Mode → Touchscreen** selected, start a new stream. Tap where you want to click, pinch the picture to zoom, and drag with two fingers to pan while zoomed. Tap with three fingers at once to open or hide the phone keyboard for Windows typing.
 
 ## Desktop controls
 
