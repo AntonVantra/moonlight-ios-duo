@@ -9,8 +9,8 @@ for variable in MOONLIGHT_CERTIFICATE MOONLIGHT_CERTIFICATE_PASSWORD MOONLIGHT_P
         exit 1
     fi
 done
-if [[ ! "$MOONLIGHT_UPLOAD_KEY_ID" =~ ^[A-Z0-9]{10}$ ]]; then
-    echo "::error::Apple's individual API key ID must be a ten-character identifier."
+if [[ ! "$MOONLIGHT_UPLOAD_KEY_ID" =~ ^[A-Z0-9]{10,16}$ ]]; then
+    echo "::error::The individual API key ID has an unexpected format."
     exit 1
 fi
 
