@@ -33,11 +33,10 @@ jobs:
       - name: Check available Apple signing and upload tooling
         run: |
           bash -n BuildScripts/sign-testflight.sh
+          python3 -c 'import ast, pathlib; ast.parse(pathlib.Path("BuildScripts/upload-testflight.py").read_text())'
           xcodebuild -version
           xcodebuild -help > "$RUNNER_TEMP/xcodebuild-help.txt" 2>&1
           grep -A 4 'testFlightInternalTestingOnly' "$RUNNER_TEMP/xcodebuild-help.txt"
-          xcrun altool --help > "$RUNNER_TEMP/altool-help.txt" 2>&1 || true
-          grep -A 2 -- '--api-key-subject' "$RUNNER_TEMP/altool-help.txt"
 
       - name: Verify the unsigned Xcode archive
         run: |

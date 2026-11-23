@@ -31,8 +31,8 @@ key="$work/private_keys/AuthKey_${MOONLIGHT_UPLOAD_KEY_ID}.p8"
 printf '%s\n' "$MOONLIGHT_UPLOAD_PRIVATE_KEY" > "$key"
 unset MOONLIGHT_CERTIFICATE MOONLIGHT_PROFILE MOONLIGHT_UPLOAD_PRIVATE_KEY
 
-# Confirm the individual key can see just this app before importing a signing key.
-token="$(ruby -r openssl -r json -r base64 - "$key" "$MOONLIGHT_UPLOAD_KEY_ID" <<'RUBY'
+make_upload_token() {
+    ruby -r openssl -r json -r base64 - "$key" "$MOONLIGHT_UPLOAD_KEY_ID" <<'RUBY'
 key = OpenSSL::PKey.read(File.binread(ARGV[0]))
 abort "Expected Apple's P-256 individual API key" unless key.is_a?(OpenSSL::PKey::EC) && key.group.curve_name == "prime256v1"
 encode = ->(value) { Base64.urlsafe_encode64(value, padding: false) }
@@ -45,7 +45,10 @@ signature = OpenSSL::ASN1.decode(key.sign("SHA256", data)).value.map do |integer
 end.join
 puts "#{data}.#{encode.call(signature)}"
 RUBY
-)"
+}
+
+# Confirm the individual key can see just this app before importing a signing key.
+token="$(make_upload_token)"
 echo "::add-mask::$token"
 curl --fail --silent --show-error --max-time 30 \
     -H "Authorization: Bearer $token" 'https://api.appstoreconnect.apple.com/v1/apps?limit=2' \
@@ -99,6 +102,7 @@ with (work / "export.plist").open("wb") as file:
         "signingCertificate": identity,
         "provisioningProfiles": {bundle: uuid},
         "testFlightInternalTestingOnly": True,
+        "generateAppStoreInformation": True,
         "manageAppVersionAndBuildNumber": False,
     }, file)
 PY
@@ -149,6 +153,7 @@ app="$work/verify/Payload/Moonlight.app"
 /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist" | grep -Fx "$bundle"
 codesign --verify --strict "$app"
 
-cd "$work"
-xcrun altool --upload-app -f "$ipa" -t ios --api-key "$MOONLIGHT_UPLOAD_KEY_ID" \
-    --api-key-subject user --output-format json
+token="$(make_upload_token)"
+echo "::add-mask::$token"
+printf '%s' "$token" | python3 BuildScripts/upload-testflight.py "$ipa" "$work/accessible-apps.json"
+unset token

@@ -49,4 +49,4 @@ The TestFlight workflow's **preflight** mode checks Xcode without any Apple cred
 - **MOONLIGHT_PROFILE** holds the base64-encoded App Store Connect provisioning profile.
 - **MOONLIGHT_UPLOAD_KEY_ID** and **MOONLIGHT_UPLOAD_PRIVATE_KEY** hold the individual key ID and the contents of its P8 file.
 
-The upload job creates an internal-only export and sends it to Apple. The private signing files are temporary and the signed IPA stays out of the public workflow artifacts.
+The upload job creates an internal-only export and sends it through Apple's Build Upload API. The private signing files are temporary and the signed IPA stays out of the public workflow artifacts.
