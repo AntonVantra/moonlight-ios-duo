@@ -50,6 +50,24 @@ static inline DesktopPoint DesktopMapPoint(DesktopRect video, double x, double y
                           fmin(fmax((y - video.y) / video.height, 0), 1)};
 }
 
+static inline DesktopRect DesktopVideoAboveKeyboard(DesktopRect video, double keyboardTop, double safeAreaBottom) {
+    if (DesktopRectIsUsable(video) && isfinite(keyboardTop) && keyboardTop < safeAreaBottom - 0.5) {
+        video.height = fmin(video.height, fmax(1, keyboardTop - video.y));
+    }
+    return video;
+}
+
+static inline DesktopPoint DesktopCenteredScrollOffset(DesktopPoint center, DesktopRect viewport,
+                                                       double contentWidth, double contentHeight) {
+    if (!DesktopRectIsUsable(viewport)) {
+        return (DesktopPoint){0};
+    }
+    return (DesktopPoint){
+        fmin(fmax(center.x - viewport.width / 2, 0), fmax(contentWidth - viewport.width, 0)),
+        fmin(fmax(center.y - viewport.height / 2, 0), fmax(contentHeight - viewport.height, 0)),
+    };
+}
+
 static inline DesktopPixels DesktopAdaptivePixels(DesktopRect viewport, double scale, int maxLongEdge) {
     if (!DesktopRectIsUsable(viewport) || !isfinite(scale) || scale <= 0 || maxLongEdge < 640) {
         return (DesktopPixels){0};

@@ -103,6 +103,8 @@ static CGRect DesktopCGRect(DesktopRect rect) {
     BOOL _leaving;
 #if !TARGET_OS_TV
     DesktopPoseObserver *_desktopPose;
+    CGRect _desktopNegotiationFrame;
+    NSString *_deferredDesktopConnectionError;
     DesktopTrackpadView *_desktopTrackpad;
     UIButton *_desktopMenuButton;
     DesktopLayout _desktopLayout;
@@ -130,6 +132,16 @@ static CGRect DesktopCGRect(DesktopRect rect) {
     
 #if !TARGET_OS_TV
     [[self revealViewController] setPrimaryViewController:self];
+    if (_deferredDesktopConnectionError) {
+        NSString *message = _deferredDesktopConnectionError;
+        _deferredDesktopConnectionError = nil;
+        if (!_desktopReady && !_leaving) {
+            [self showDesktopConnectionError:message];
+        }
+    }
+    if (_desktopReady && !self.presentedViewController) {
+        [_streamView becomeFirstResponder];
+    }
 #endif
     if (!_streamMan && !_leaving) {
         [self beginStream];
@@ -258,6 +270,8 @@ static CGRect DesktopCGRect(DesktopRect rect) {
         [_scrollView setMaximumZoomScale:self.streamConfig.desktopMode ? 4.0 : 10.0];
 #if !TARGET_OS_TV
         if (self.streamConfig.desktopMode) {
+            _scrollView.autoresizingMask = UIViewAutoresizingNone;
+            _streamView.autoresizingMask = UIViewAutoresizingNone;
             _scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
             _scrollView.delaysContentTouches = NO;
             _scrollView.panGestureRecognizer.enabled = NO;
@@ -301,6 +315,7 @@ static CGRect DesktopCGRect(DesktopRect rect) {
     CGRect bounds = self.view.bounds;
     CGRect videoFrame = bounds;
 #if !TARGET_OS_TV
+    BOOL negotiationFrameChanged = NO;
     if (_desktopTrackpad) {
         BOOL laptop = _desktopLayout == DesktopLayoutLaptop ||
                       (_desktopLayout == DesktopLayoutAutomatic && _desktopPose.isLaptopPose);
@@ -314,6 +329,16 @@ static CGRect DesktopCGRect(DesktopRect rect) {
         }
         _desktopTrackpad.hidden = CGRectIsEmpty(trackpadFrame);
         videoFrame = DesktopCGRect(panes.video);
+        negotiationFrameChanged = !CGRectEqualToRect(_desktopNegotiationFrame, videoFrame);
+        _desktopNegotiationFrame = videoFrame;
+
+        // The local keyboard changes presentation without renegotiating the stream.
+        CGFloat keyboardTop = CGRectGetMinY(self.view.keyboardLayoutGuide.layoutFrame);
+        CGFloat safeAreaBottom = CGRectGetMaxY(self.view.safeAreaLayoutGuide.layoutFrame);
+        videoFrame = DesktopCGRect(DesktopVideoAboveKeyboard(panes.video, keyboardTop, safeAreaBottom));
+    }
+    if (negotiationFrameChanged) {
+        [self scheduleDesktopResolutionUpdate];
     }
 #endif
     if (CGRectEqualToRect(videoFrame, _lastVideoFrame)) {
@@ -322,11 +347,32 @@ static CGRect DesktopCGRect(DesktopRect rect) {
     _lastVideoFrame = videoFrame;
 
     if (_scrollView) {
+#if !TARGET_OS_TV
+        CGFloat previousZoom = self.streamConfig.desktopMode ? _scrollView.zoomScale : 1;
+        DesktopPoint center = {0.5, 0.5};
+        if (previousZoom > 1) {
+            CGPoint focalPoint = [self desktopViewportCenter];
+            center = DesktopMapPoint(DesktopRectFromCGRect([_streamView videoContentRect]), focalPoint.x, focalPoint.y);
+        }
+#endif
         [_scrollView setZoomScale:1 animated:NO];
         _scrollView.frame = videoFrame;
         _scrollView.contentOffset = CGPointZero;
         _streamView.frame = (CGRect){CGPointZero, videoFrame.size};
         _scrollView.contentSize = videoFrame.size;
+#if !TARGET_OS_TV
+        if (previousZoom > 1) {
+            [_scrollView setZoomScale:previousZoom animated:NO];
+            CGRect encoded = [_streamView videoContentRect];
+            CGPoint focus = CGPointMake(CGRectGetMinX(encoded) + center.x * CGRectGetWidth(encoded),
+                                        CGRectGetMinY(encoded) + center.y * CGRectGetHeight(encoded));
+            CGPoint contentPoint = [_scrollView convertPoint:focus fromView:_streamView];
+            DesktopPoint offset = DesktopCenteredScrollOffset(
+                (DesktopPoint){contentPoint.x, contentPoint.y}, DesktopRectFromCGRect(_scrollView.bounds),
+                _scrollView.contentSize.width, _scrollView.contentSize.height);
+            _scrollView.contentOffset = CGPointMake(offset.x, offset.y);
+        }
+#endif
     } else {
         _streamView.frame = videoFrame;
     }
@@ -335,9 +381,6 @@ static CGRect DesktopCGRect(DesktopRect rect) {
     _spinner.center = CGPointMake(CGRectGetMidX(videoFrame), CGRectGetMidY(videoFrame) - 36);
     _tipLabel.center = CGPointMake(CGRectGetMidX(videoFrame), CGRectGetMaxY(videoFrame) - 36);
     [_streamMan updateRendererLayout];
-#if !TARGET_OS_TV
-    [self scheduleDesktopResolutionUpdate];
-#endif
 }
 
 - (void)beginStream {
@@ -361,7 +404,7 @@ static CGRect DesktopCGRect(DesktopRect rect) {
 - (DesktopPixels)desktopStreamPixels {
     if (_adaptiveDesktop) {
         CGFloat scale = self.view.window.windowScene.screen.nativeScale;
-        DesktopPixels pixels = DesktopAdaptivePixels(DesktopRectFromCGRect(_lastVideoFrame), scale, 3840);
+        DesktopPixels pixels = DesktopAdaptivePixels(DesktopRectFromCGRect(_desktopNegotiationFrame), scale, 3840);
         if (pixels.width > 0 && pixels.height > 0) { return pixels; }
     }
     return (DesktopPixels){_fixedWidth, _fixedHeight};
@@ -393,6 +436,7 @@ static CGRect DesktopCGRect(DesktopRect rect) {
     if (_restartingDesktop || _leaving) { return; }
     _restartingDesktop = YES;
     _desktopReady = NO;
+    _deferredDesktopConnectionError = nil;
     [_desktopResizeTimer invalidate];
     _desktopResizeTimer = nil;
     [_statsUpdateTimer invalidate];
@@ -449,13 +493,67 @@ static CGRect DesktopCGRect(DesktopRect rect) {
     controls.spacing = 4;
     [self.view addSubview:controls];
     UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
+    NSLayoutConstraint *aboveKeyboard = [controls.bottomAnchor
+        constraintLessThanOrEqualToAnchor:self.view.keyboardLayoutGuide.topAnchor constant:-4];
+    aboveKeyboard.priority = UILayoutPriorityDefaultHigh;
     [NSLayoutConstraint activateConstraints:@[
+        aboveKeyboard,
         [controls.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-8],
         [controls.topAnchor constraintEqualToAnchor:safe.topAnchor constant:8],
         [keyboard.widthAnchor constraintGreaterThanOrEqualToConstant:44],
         [keyboard.heightAnchor constraintGreaterThanOrEqualToConstant:44],
         [_desktopMenuButton.widthAnchor constraintGreaterThanOrEqualToConstant:44],
     ]];
+}
+
+- (CGPoint)desktopViewportCenter {
+    CGPoint center = CGPointMake(CGRectGetMidX(_scrollView.bounds), CGRectGetMidY(_scrollView.bounds));
+    return [_streamView convertPoint:center fromView:_scrollView];
+}
+
+- (void)zoomDesktopBy:(CGFloat)factor {
+    CGSize viewport = _scrollView.bounds.size;
+    if (viewport.width <= 0 || viewport.height <= 0) { return; }
+    CGFloat zoom = MIN(_scrollView.maximumZoomScale, MAX(_scrollView.minimumZoomScale, _scrollView.zoomScale * factor));
+    if (zoom == _scrollView.minimumZoomScale) {
+        [_scrollView setZoomScale:zoom animated:YES];
+        return;
+    }
+    CGPoint center = [self desktopViewportCenter];
+    CGFloat width = viewport.width / zoom;
+    CGFloat height = viewport.height / zoom;
+    [_scrollView zoomToRect:CGRectMake(center.x - width / 2, center.y - height / 2, width, height) animated:YES];
+}
+
+- (void)showDesktopTextComposer {
+    if (!_desktopReady || self.presentedViewController) { return; }
+    [_streamView releaseDesktopInput];
+    [_desktopTrackpad releasePointer];
+    [self updateDesktopMenu];
+    __weak StreamFrameViewController *weakSelf = self;
+    DesktopTextComposer *composer = [[DesktopTextComposer alloc] initWithSendText:^BOOL(NSString *text) {
+        StreamFrameViewController *controller = weakSelf;
+        return controller && controller->_desktopReady && [controller->_streamView sendDesktopText:text];
+    }];
+    UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:composer];
+    navigation.modalPresentationStyle = UIModalPresentationFullScreen;
+    [self presentViewController:navigation animated:YES completion:nil];
+}
+
+- (NSArray<UIAction *> *)desktopShortcutActions:(NSArray<NSString *> *)titles
+                                          keys:(NSDictionary<NSString *, NSArray<NSNumber *> *> *)shortcuts {
+    __weak StreamFrameViewController *weakSelf = self;
+    NSMutableArray<UIAction *> *actions = [NSMutableArray arrayWithCapacity:titles.count];
+    for (NSString *title in titles) {
+        NSArray<NSNumber *> *chord = shortcuts[title];
+        [actions addObject:[UIAction actionWithTitle:title image:nil identifier:nil handler:^(UIAction *action) {
+            StreamFrameViewController *controller = weakSelf;
+            if (controller && controller->_desktopReady) {
+                [controller->_streamView sendDesktopShortcut:chord];
+            }
+        }]];
+    }
+    return actions;
 }
 
 - (void)updateDesktopMenu {
@@ -497,18 +595,15 @@ static CGRect DesktopCGRect(DesktopRect rect) {
         @"Escape": @[@0x1b], @"Tab": @[@0x09], @"Delete": @[@0x2e],
         @"Left": @[@0x25], @"Up": @[@0x26], @"Right": @[@0x27], @"Down": @[@0x28]
     };
-    NSMutableArray<UIAction *> *shortcuts = [NSMutableArray array];
-    for (NSString *title in @[@"Alt+Tab", @"Copy", @"Paste", @"Select all", @"Show desktop", @"File Explorer",
-                               @"Task Manager", @"Move window left", @"Move window right",
-                               @"Escape", @"Tab", @"Delete", @"Left", @"Up", @"Right", @"Down"]) {
-        NSArray<NSNumber *> *chord = shortcutKeys[title];
-        [shortcuts addObject:[UIAction actionWithTitle:title image:nil identifier:nil handler:^(UIAction *action) {
-            StreamFrameViewController *controller = weakSelf;
-            if (controller && controller->_desktopReady) {
-                [controller->_streamView sendDesktopShortcut:chord];
-            }
-        }]];
-    }
+    NSArray<UIAction *> *shortcuts = [self desktopShortcutActions:
+        @[@"Alt+Tab", @"Copy", @"Paste", @"Select all", @"Show desktop", @"File Explorer",
+          @"Task Manager", @"Move window left", @"Move window right", @"Escape", @"Tab", @"Delete",
+          @"Left", @"Up", @"Right", @"Down"] keys:shortcutKeys];
+    NSArray<UIAction *> *browser = [self desktopShortcutActions:
+        @[@"Address bar", @"New tab", @"Find on page", @"Reopen closed tab"] keys:@{
+            @"Address bar": @[@0xa2, @0x4c], @"New tab": @[@0xa2, @0x54],
+            @"Find on page": @[@0xa2, @0x46], @"Reopen closed tab": @[@0xa2, @0xa0, @0x54],
+        }];
 
     NSMutableArray<UIAction *> *monitors = [NSMutableArray array];
     for (NSInteger index = 0; index < 2; index++) {
@@ -564,15 +659,30 @@ static CGRect DesktopCGRect(DesktopRect rect) {
         [controller restartDesktopStream:@"Changing resolution"];
         [controller updateDesktopMenu];
     }];
+    UIAction *text = [UIAction actionWithTitle:@"Send text to PC" image:nil identifier:nil handler:^(UIAction *action) {
+        [weakSelf showDesktopTextComposer];
+    }];
+    UIAction *zoomIn = [UIAction actionWithTitle:@"Zoom in" image:nil identifier:nil handler:^(UIAction *action) {
+        [weakSelf zoomDesktopBy:1.5];
+    }];
+    UIAction *zoomOut = [UIAction actionWithTitle:@"Zoom out" image:nil identifier:nil handler:^(UIAction *action) {
+        [weakSelf zoomDesktopBy:1.0 / 1.5];
+    }];
+    UIAction *resetZoom = [UIAction actionWithTitle:@"Reset zoom" image:nil identifier:nil handler:^(UIAction *action) {
+        [weakSelf zoomDesktopBy:0];
+    }];
     UIAction *disconnect = [UIAction actionWithTitle:@"Disconnect" image:nil identifier:nil handler:^(UIAction *action) {
         [weakSelf returnToMainFrame];
     }];
 
     _desktopMenuButton.menu = [UIMenu menuWithChildren:@[
+        text,
+        [UIMenu menuWithTitle:@"Zoom" children:@[zoomIn, zoomOut, resetZoom]],
         [UIMenu menuWithTitle:@"Layout" children:layouts], touch, fit, resolution,
         [UIMenu menuWithTitle:@"Host display shape" children:capture],
         [UIMenu menuWithTitle:@"Switch monitor" children:monitors],
         [UIMenu menuWithTitle:@"Hold modifiers" children:modifiers],
+        [UIMenu menuWithTitle:@"Browser shortcuts" children:browser],
         [UIMenu menuWithTitle:@"Windows shortcuts" children:shortcuts], disconnect
     ]];
 }
@@ -738,7 +848,9 @@ static CGRect DesktopCGRect(DesktopRect rect) {
             self->_desktopReady = YES;
             self->_streamView.userInteractionEnabled = YES;
             self->_desktopTrackpad.userInteractionEnabled = YES;
-            [self->_streamView becomeFirstResponder];
+            if (!self.presentedViewController) {
+                [self->_streamView becomeFirstResponder];
+            }
             [self scheduleDesktopResolutionUpdate];
         }
 #endif
@@ -951,6 +1063,10 @@ static CGRect DesktopCGRect(DesktopRect rect) {
     [_statsUpdateTimer invalidate];
     _statsUpdateTimer = nil;
     [UIApplication sharedApplication].idleTimerDisabled = NO;
+    if (self.presentedViewController) {
+        _deferredDesktopConnectionError = message;
+        return;
+    }
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Desktop connection"
                                                                     message:message preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"Retry" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
@@ -966,7 +1082,7 @@ static CGRect DesktopCGRect(DesktopRect rect) {
     [alert addAction:[UIAlertAction actionWithTitle:@"Disconnect" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
         [self returnToMainFrame];
     }]];
-    if (!self.presentedViewController) { [self presentViewController:alert animated:YES completion:nil]; }
+    [self presentViewController:alert animated:YES completion:nil];
 }
 #endif
 

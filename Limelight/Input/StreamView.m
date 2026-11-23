@@ -15,6 +15,7 @@
 #import "AbsoluteTouchHandler.h"
 #import "KeyboardInputField.h"
 #import "DesktopGeometry.h"
+#include <limits.h>
 
 static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 
@@ -817,6 +818,12 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     [interactionTimer invalidate];
     interactionTimer = nil;
 }
+
+- (BOOL)sendDesktopText:(NSString *)text {
+    NSData *utf8 = [text dataUsingEncoding:NSUTF8StringEncoding];
+    return utf8.length > 0 && utf8.length <= UINT_MAX &&
+           LiSendUtf8TextEvent(utf8.bytes, (unsigned int)utf8.length) == 0;
+}
 #endif
 
 - (void)onKeyboardPressed:(UITextField *)textField {
@@ -833,8 +840,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
             // Plain text preserves the keyboard's layout and composed Unicode.
             // Modifier chords need virtual keys so Windows can act on them.
             if (keysDown.count == 0) {
-                NSData *utf8 = [text dataUsingEncoding:NSUTF8StringEncoding];
-                LiSendUtf8TextEvent(utf8.bytes, (int)utf8.length);
+                [self sendDesktopText:text];
             } else {
                 for (NSUInteger i = 0; i < text.length; i++) {
                     struct KeyEvent key = [KeyboardSupport translateKeyEvent:[text characterAtIndex:i] withModifierFlags:0];

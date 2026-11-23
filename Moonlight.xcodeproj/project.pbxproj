@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		D00000000000000000000001 /* DesktopPoseObserver.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000002 /* DesktopPoseObserver.swift */; };
+		D00000000000000000000004 /* DesktopTextComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000005 /* DesktopTextComposer.swift */; };
 		693B3A9B218638CD00982F7B /* Settings.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 693B3A9A218638CD00982F7B /* Settings.bundle */; };
 		98181BE92791277400E43572 /* libSDL2.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 98181BE82791275D00E43572 /* libSDL2.a */; };
 		98181BEB2791278F00E43572 /* libSDL2.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 98181BEA2791278300E43572 /* libSDL2.a */; };
@@ -173,6 +174,7 @@
 /* Begin PBXFileReference section */
 		D00000000000000000000002 /* DesktopPoseObserver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopPoseObserver.swift; sourceTree = "<group>"; };
 		D00000000000000000000003 /* DesktopGeometry.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DesktopGeometry.h; sourceTree = "<group>"; };
+		D00000000000000000000005 /* DesktopTextComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopTextComposer.swift; sourceTree = "<group>"; };
 		566E9D2B2770B23A00EF7BFE /* Moonlight v1.7.xcdatamodel */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodel; path = "Moonlight v1.7.xcdatamodel"; sourceTree = "<group>"; };
 		693B3A9A218638CD00982F7B /* Settings.bundle */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.plug-in"; path = Settings.bundle; sourceTree = "<group>"; };
 		9803CCAB254F9EAF00EE185E /* ConnectionCallbacks.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ConnectionCallbacks.h; sourceTree = "<group>"; };
@@ -524,6 +526,7 @@
 				988FCD40293B091B003050E2 /* KeyboardInputField.m */,
 				D00000000000000000000002 /* DesktopPoseObserver.swift */,
 				D00000000000000000000003 /* DesktopGeometry.h */,
+				D00000000000000000000005 /* DesktopTextComposer.swift */,
 			);
 			path = Input;
 			sourceTree = "<group>";
@@ -940,6 +943,7 @@
 				FB89463119F646E200339C8A /* StreamManager.m in Sources */,
 				988FCD41293B091B003050E2 /* KeyboardInputField.m in Sources */,
 				D00000000000000000000001 /* DesktopPoseObserver.swift in Sources */,
+				D00000000000000000000004 /* DesktopTextComposer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

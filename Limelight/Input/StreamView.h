@@ -42,6 +42,7 @@
 - (BOOL)toggleDesktopModifier:(short)keyCode;
 - (BOOL)isDesktopModifierHeld:(short)keyCode;
 - (void)sendDesktopShortcut:(NSArray<NSNumber *> *)keys;
+- (BOOL)sendDesktopText:(NSString *)text;
 - (void)releaseDesktopInput;
 #endif
 
